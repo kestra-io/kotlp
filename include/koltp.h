@@ -126,4 +126,9 @@ void traces_emit_root_span(const koltp_config *cfg, pid_t child_pid,
  * ends of the pipes. Returns -1 on failure.                                  */
 pid_t child_spawn(const koltp_config *cfg, int *out_fd, int *err_fd);
 
+/* Map a wait4()/waitpid() status into the exit code the wrapper should return:
+ * the child's own exit status, or 128 + signal number when it was killed by a
+ * signal (the convention used by POSIX shells). */
+int child_exit_code(int status);
+
 #endif /* KOLTP_H */

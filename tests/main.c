@@ -11,6 +11,7 @@ int main(void) {
     RUN(test_util);
     RUN(test_otel);
     RUN(test_args);
+    RUN(test_child);
 
     printf("\n%d checks, %d failed\n", g_checks_run, g_checks_failed);
     if (g_checks_failed == 0) {

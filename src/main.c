@@ -79,22 +79,15 @@ int main(int argc, char **argv) {
     if (metrics) metrics_stop(metrics);
     if (traces) traces_stop(traces);
 
-    int exit_code = 0;
-    int term_signal = 0;
-    if (WIFEXITED(status)) {
-        exit_code = WEXITSTATUS(status);
-    } else if (WIFSIGNALED(status)) {
-        term_signal = WTERMSIG(status);
-        exit_code = 128 + term_signal;
-    }
+    int exit_code = child_exit_code(status);
+    int term_signal = WIFSIGNALED(status) ? WTERMSIG(status) : 0;
 
     uint64_t end_ns = koltp_now_unix_nano();
 
     if (cfg.enable_metrics) metrics_emit_final(&cfg, pid, &ru);
     if (cfg.enable_traces)
         traces_emit_root_span(&cfg, pid, trace_id, span_id, start_ns, end_ns,
-                              WIFEXITED(status) ? WEXITSTATUS(status) : exit_code,
-                              term_signal);
+                              exit_code, term_signal);
 
     return exit_code;
 }

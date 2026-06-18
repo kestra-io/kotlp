@@ -9,7 +9,16 @@
 #include <fcntl.h>
 #include <stdio.h>
 #include <string.h>
+#include <sys/wait.h>
 #include <unistd.h>
+
+int child_exit_code(int status) {
+    if (WIFEXITED(status)) return WEXITSTATUS(status);
+    /* Terminated by a signal: mirror the POSIX shell convention of 128 + N so
+     * callers see e.g. 130 for SIGINT, 137 for SIGKILL. */
+    if (WIFSIGNALED(status)) return 128 + WTERMSIG(status);
+    return 0;
+}
 
 static int set_cloexec(int fd) {
     int flags = fcntl(fd, F_GETFD, 0);
