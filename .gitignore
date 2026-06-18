@@ -1,0 +1,9 @@
+# build artifacts
+/build/
+
+# editor / OS noise
+*.o
+*.dbg
+*.aarch64.elf
+.DS_Store
+*.swp

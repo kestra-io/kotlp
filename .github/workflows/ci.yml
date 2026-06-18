@@ -1,0 +1,68 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build & test (Linux)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Cache cosmocc toolchain
+        uses: actions/cache@v4
+        with:
+          path: build/cosmocc
+          key: cosmocc-${{ hashFiles('Makefile') }}
+
+      - name: Build APE
+        run: make
+
+      - name: Unit tests
+        run: make test-unit
+
+      - name: Smoke test (Linux)
+        run: make test
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: koltp-ape
+          path: |
+            build/koltp
+            build/test-unit
+          if-no-files-found: error
+
+  crosstest:
+    name: Run same binaries on ${{ matrix.os }}
+    needs: build
+    strategy:
+      fail-fast: false
+      matrix:
+        # The exact same APEs produced on Linux are executed unmodified here,
+        # proving the "build once, run anywhere" property (incl. arm64 macOS).
+        os: [macos-13, macos-14]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: koltp-ape
+          path: build
+
+      - name: Make executable
+        run: chmod +x build/koltp build/test-unit
+
+      - name: Unit tests
+        run: ./build/test-unit
+
+      - name: Smoke test
+        run: scripts/smoke_test.sh "$(pwd)/build/koltp"

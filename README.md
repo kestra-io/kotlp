@@ -1,0 +1,212 @@
+# koltp — OpenTelemetry process wrapper
+
+`koltp` is a tiny command-line tool that runs **any** command and emits
+[OpenTelemetry](https://opentelemetry.io/) JSON to the console — no agent,
+no daemon, no language SDK required.
+
+It ships as a single [**Actually Portable Executable**](https://justine.lol/ape.html)
+(APE) built with [Cosmopolitan Libc](https://github.com/jart/cosmopolitan):
+**one binary file** runs natively on **Linux, macOS, Windows, FreeBSD, OpenBSD
+and NetBSD**, on both **amd64 and arm64**.
+
+```sh
+koltp -- ./my-program --its --own --flags
+```
+
+## What it does
+
+`koltp` spawns the wrapped process and adds three layers of observability, all
+emitted as newline-delimited JSON (NDJSON) in the OTLP/JSON wire format and
+following OpenTelemetry [Semantic Conventions](https://opentelemetry.io/docs/specs/semconv/):
+
+| Feature  | What you get | Where it goes |
+|----------|--------------|---------------|
+| **Logs** | Each line of the child's stdout/stderr becomes an OTLP `LogRecord` with `log.iostream` set to `stdout`/`stderr`. | stdout-origin records → **our stdout**; stderr-origin records → **our stderr** |
+| **Traces** | An embedded **OTLP/HTTP receiver** captures spans the child exports, and a synthetic **root span** describes the whole execution (duration, exit code, signal). | stdout |
+| **Metrics** | Periodic samples of the child's **CPU time, resident/virtual memory, disk IO and open file descriptors** as OTLP metrics (`process.*`). | stdout |
+
+Because everything is OTLP/JSON, you can pipe `koltp` output straight into an
+OpenTelemetry Collector, `jq`, or any log shipper (use `-f json` for bare,
+unframed records; see [Output framing](#output-framing)).
+
+## Quick start
+
+```sh
+# Build the APE (downloads the Cosmopolitan toolchain on first run)
+make
+
+# Run something under observation
+build/koltp -- sh -c 'echo working; sleep 1; echo failed >&2; exit 3'
+
+# Pretty-print just the logs with jq (-f json emits bare, unframed JSON)
+build/koltp -f json -- ./my-program 2>/dev/null | jq 'select(.resourceLogs)'
+```
+
+Example log record (one line, pretty-printed here for readability):
+
+```json
+{
+  "resourceLogs": [{
+    "resource": { "attributes": [
+      { "key": "service.name", "value": { "stringValue": "my-program" } },
+      { "key": "process.pid",  "value": { "intValue": "48213" } }
+    ]},
+    "scopeLogs": [{
+      "scope": { "name": "koltp", "version": "0.1.0" },
+      "logRecords": [{
+        "timeUnixNano": "1718700000000000000",
+        "severityNumber": 9, "severityText": "INFO",
+        "body": { "stringValue": "working" },
+        "attributes": [{ "key": "log.iostream", "value": { "stringValue": "stdout" } }]
+      }]
+    }]
+  }]
+}
+```
+
+## Usage
+
+```
+koltp [options] -- <command> [args...]
+koltp [options] <command> [args...]
+
+Options:
+  -s, --service-name NAME  service.name resource attribute
+                           (default: $OTEL_SERVICE_NAME or the command name)
+  -i, --interval MS        metrics sampling interval (default: 1000)
+  -p, --otlp-port PORT     embedded OTLP/HTTP port (default: 4318; falls back
+                           to a free port if busy; 0 = always pick a free port)
+      --no-logs            disable log capture (output passes through verbatim)
+      --no-metrics         disable resource sampling
+      --no-traces          disable the embedded trace receiver
+  -f, --format FORMAT      output format (default: kjson):
+                             kjson - ::{"oltp":<json>}:: framed records
+                             json  - bare OTLP JSON (newline-delimited)
+  -V, --version            print version and exit
+  -h, --help               print help and exit
+```
+
+### Output framing (`-f` / `--format`)
+
+By default (`-f kjson`) every telemetry record is emitted on its own line,
+**framed** so it is easy to pick out of a mixed console stream:
+
+```
+::{"oltp":<the OTLP/JSON record>}::
+```
+
+Pass `-f json` to emit the bare OTLP/JSON record (newline-delimited) with no
+framing — handy for piping straight into `jq` or an OpenTelemetry Collector:
+
+```sh
+koltp -f json -- ./my-program 2>/dev/null | jq 'select(.resourceLogs)'
+```
+
+The `--no-logs` passthrough output (raw child bytes) is never framed in either
+format.
+
+`koltp` proxies the child's exit code (and reports `128 + signal` if the child
+was killed by a signal). `SIGINT`/`SIGTERM`/`SIGHUP` are forwarded to the child.
+
+## Capturing traces from your app
+
+When traces are enabled (default), `koltp` starts an OTLP/HTTP receiver on
+`127.0.0.1:4318` (or, if that port is busy, an automatically chosen free port)
+and exports these environment variables to the child — pointing at the port it
+actually bound — so most OpenTelemetry SDKs auto-configure themselves:
+
+```
+OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:4318
+OTEL_EXPORTER_OTLP_PROTOCOL=http/json
+OTEL_EXPORTER_OTLP_TRACES_PROTOCOL=http/json
+OTEL_EXPORTER_OTLP_COMPRESSION=none
+OTEL_TRACES_EXPORTER=otlp
+OTEL_SERVICE_NAME=<service name>
+```
+
+Any spans your application emits over OTLP/HTTP+JSON are forwarded to the
+console verbatim, alongside `koltp`'s own root span. (The receiver expects
+**uncompressed JSON**; protobuf and gzip payloads are not decoded.)
+
+## Platform notes
+
+| Capability | Linux | macOS / Windows / BSD |
+|------------|:-----:|:---------------------:|
+| Log capture (stdout/stderr) | ✅ | ✅ |
+| Embedded trace receiver     | ✅ | ✅ |
+| Root execution span         | ✅ | ✅ |
+| **Live** metric sampling    | ✅ (`/proc`) | ⚠️ summary only |
+| Final usage summary (`rusage`) | ✅ | ✅ |
+
+Live per-interval metrics are read from `/proc` and are therefore Linux-only.
+On the other platforms `koltp` still emits an authoritative usage summary from
+`wait4()`/`getrusage()` when the child exits (CPU time, peak RSS, block IO).
+
+## Building
+
+`make` uses `cosmocc` if it is on your `PATH`; otherwise it downloads the
+Cosmopolitan toolchain into `build/cosmocc/` automatically.
+
+```sh
+make            # build build/koltp
+make test-unit  # build + run the C unit tests (build/test-unit)
+make test       # build + run the end-to-end smoke test
+make check      # unit tests + smoke test
+make run        # build + run a demo command
+make clean      # remove objects and the binary
+make distclean  # also remove the downloaded toolchain
+make install    # install to /usr/local/bin (honors DESTDIR)
+```
+
+### Tests
+
+- **Unit tests** (`tests/`) cover the pure building blocks — the string
+  builder + JSON escaping (`json.c`), time/random-id/hostname helpers
+  (`util.c`), and the OTLP attribute/resource builders (`otel.c`). They use a
+  tiny dependency-free harness (`tests/test.h`) and compile into their own APE,
+  `build/test-unit`.
+- The **smoke test** (`scripts/smoke_test.sh`) runs the real binary end-to-end
+  and asserts the emitted OTLP logs, metrics, traces and the proxied exit code.
+
+CI runs both on Linux, and re-runs the very same `test-unit` APE and the
+smoke test on macOS (Intel **and** arm64) to prove the binary is portable.
+
+Requirements for the auto-download path: `curl` and `unzip`. The produced
+`build/koltp` is the APE — copy that one file to any supported OS/arch and run it.
+
+## How it works
+
+```
+            ┌────────────────────────── koltp ──────────────────────────┐
+            │                                                           │
+  argv ───▶ │  fork/exec child  ──stdout/stderr pipes──▶ logs_pump ─────┼─▶ OTLP logs
+            │        │                                                   │
+            │        ├──▶ metrics sampler (/proc or rusage) ────────────┼─▶ OTLP metrics
+            │        │                                                   │
+   child ◀──┼── env: OTEL_EXPORTER_OTLP_ENDPOINT=127.0.0.1:4318          │
+   spans ───┼──▶ embedded OTLP/HTTP receiver ───────────────────────────┼─▶ OTLP traces
+            │     + synthetic root span (duration, exit code)            │
+            └───────────────────────────────────────────────────────────┘
+```
+
+Source layout:
+
+```
+include/koltp.h   shared declarations
+src/main.c       arg parsing, orchestration, signal/exit proxying
+src/child.c      fork/exec with piped stdout/stderr
+src/logs.c       stdout/stderr -> OTLP log records
+src/metrics.c    /proc + rusage sampling -> OTLP metrics
+src/traces.c     embedded OTLP/HTTP receiver + root span
+src/otel.c       OTLP/JSON building blocks + thread-safe console sink
+src/json.c       growable string buffer with JSON escaping
+src/util.c       time, random ids, hostname
+tests/           unit tests (test.h harness + test_*.c suites)
+scripts/         smoke_test.sh end-to-end integration test
+```
+
+See [AGENTS.md](AGENTS.md) for contributor and AI-agent guidance.
+
+## License
+
+[MIT](LICENSE) © 2026 Ludovic DEHON

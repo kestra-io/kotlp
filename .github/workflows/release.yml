@@ -1,0 +1,51 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Build & publish APE
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Cache cosmocc toolchain
+        uses: actions/cache@v4
+        with:
+          path: build/cosmocc
+          key: cosmocc-${{ hashFiles('Makefile') }}
+
+      - name: Build
+        run: make
+
+      - name: Unit tests
+        run: make test-unit
+
+      - name: Smoke test
+        run: make test
+
+      - name: Package artifacts
+        run: |
+          mkdir -p dist
+          # The single APE: runs on Linux/macOS/Windows/BSD, amd64+arm64.
+          cp build/koltp dist/koltp
+          # Windows requires a .exe/.com extension to launch the same bytes.
+          cp build/koltp dist/koltp.exe
+          cd dist
+          sha256sum koltp koltp.exe > SHA256SUMS
+          echo "----- checksums -----"
+          cat SHA256SUMS
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${GITHUB_REF_NAME}" \
+            --title "koltp ${GITHUB_REF_NAME}" \
+            --generate-notes \
+            dist/koltp dist/koltp.exe dist/SHA256SUMS
