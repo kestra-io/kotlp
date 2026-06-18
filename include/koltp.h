@@ -107,6 +107,31 @@ void otel_attr_int(sb *s, const char *key, int64_t val);
  * stdout-origin records go to fd 1, stderr-origin records go to fd 2.        */
 void logs_pump(const koltp_config *cfg, pid_t child_pid, int out_fd, int err_fd);
 
+/* metrics helpers (pure; exposed for unit testing) -------------------------*/
+
+/* Selected fields parsed from a /proc/<pid>/stat line (raw units). */
+typedef struct {
+    long ppid;             /* field 4                                  */
+    long long utime_ticks; /* field 14, in clock ticks                 */
+    long long stime_ticks; /* field 15, in clock ticks                 */
+    long long num_threads; /* field 20                                 */
+    long long vsize_bytes; /* field 23, bytes                          */
+    long long rss_pages;   /* field 24, in pages                       */
+} koltp_proc_stat;
+
+/* Parse one /proc/<pid>/stat line. Handles a comm containing spaces/parens.
+ * Returns false if the line is malformed/too short. */
+bool koltp_parse_proc_stat(const char *line, koltp_proc_stat *out);
+
+/* Mark which of the `n` processes are `root` or one of its descendants.
+ * pid[i]/ppid[i] describe process i; in_tree[i] (length n) is filled in. */
+void koltp_mark_descendants(const pid_t *pid, const pid_t *ppid, int n,
+                            pid_t root, bool *in_tree);
+
+/* CPU utilization in [0,1]: CPU-seconds consumed over the interval divided by
+ * wall-seconds times the CPU count. Returns 0 for non-positive inputs. */
+double koltp_cpu_utilization(double cpu_delta_s, double wall_delta_s, int ncpu);
+
 /* metrics: background sampler. Started/stopped around the child lifetime.    */
 typedef struct metrics_sampler metrics_sampler;
 metrics_sampler *metrics_start(const koltp_config *cfg, pid_t child_pid);

@@ -13,6 +13,7 @@ int main(void) {
     RUN(test_args);
     RUN(test_child);
     RUN(test_otlp_pb);
+    RUN(test_metrics);
 
     printf("\n%d checks, %d failed\n", g_checks_run, g_checks_failed);
     if (g_checks_failed == 0) {

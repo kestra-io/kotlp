@@ -23,7 +23,7 @@ following OpenTelemetry [Semantic Conventions](https://opentelemetry.io/docs/spe
 |----------|--------------|---------------|
 | **Logs** | Each line of the child's stdout/stderr becomes an OTLP `LogRecord` with `log.iostream` set to `stdout`/`stderr`. | stdout-origin records → **our stdout**; stderr-origin records → **our stderr** |
 | **Traces** | An embedded **OTLP/HTTP receiver** captures spans the child exports, and a synthetic **root span** describes the whole execution (duration, exit code, signal). | stdout |
-| **Metrics** | Periodic samples of the child's **CPU time, resident/virtual memory, disk IO and open file descriptors** as OTLP metrics (`process.*`). | stdout |
+| **Metrics** | Periodic samples of the child **process tree's CPU time/utilization, resident/virtual memory, disk IO, thread count and open file descriptors** as OTLP metrics (`process.*`). | stdout |
 
 Because everything is OTLP/JSON, you can pipe `koltp` output straight into an
 OpenTelemetry Collector, `jq`, or any log shipper (use `-f json` for bare,
@@ -167,7 +167,23 @@ OTLP over HTTP only, not gRPC.)
 | **Live** metric sampling    | ✅ (`/proc`) | ⚠️ summary only |
 | Final usage summary (`rusage`) | ✅ | ✅ |
 
-Live per-interval metrics are read from `/proc` and are therefore Linux-only.
+Live per-interval metrics are read from `/proc` and are therefore Linux-only
+(the single APE binary detects the host OS at runtime). Each sample aggregates
+the child **and all of its descendants**, and emits:
+
+| Metric | Type | Unit | Attributes |
+|---|---|---|---|
+| `process.cpu.time` | sum | `s` | `cpu.mode`=user\|system |
+| `process.cpu.utilization` | gauge | `1` | `cpu.mode`=user\|system |
+| `process.memory.usage` | gauge | `By` | — (summed RSS) |
+| `process.memory.virtual` | gauge | `By` | — (summed vsize) |
+| `process.disk.io` | sum | `By` | `disk.io.direction`=read\|write |
+| `process.thread.count` | gauge | `{thread}` | — |
+| `process.open_file_descriptor.count` | gauge | `{count}` | — |
+
+`process.cpu.utilization` is the CPU-seconds consumed over the interval divided
+by the elapsed wall time and the CPU count, so it ranges 0–1 across the machine.
+
 On the other platforms `koltp` still emits an authoritative usage summary from
 `wait4()`/`getrusage()` when the child exits (CPU time, peak RSS, block IO).
 
