@@ -10,6 +10,7 @@ int main(void) {
     RUN(test_json);
     RUN(test_util);
     RUN(test_otel);
+    RUN(test_args);
 
     printf("\n%d checks, %d failed\n", g_checks_run, g_checks_failed);
     if (g_checks_failed == 0) {

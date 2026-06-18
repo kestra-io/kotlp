@@ -79,6 +79,8 @@ Options:
       --no-logs            disable log capture (output passes through verbatim)
       --no-metrics         disable resource sampling
       --no-traces          disable the embedded trace receiver
+  -r, --raw                disable everything (equivalent to
+                           --no-logs --no-metrics --no-traces)
   -f, --format FORMAT      output format (default: kjson):
                              kjson - ::{"oltp":<json>}:: framed records
                              json  - bare OTLP JSON (newline-delimited)

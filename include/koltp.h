@@ -18,6 +18,7 @@
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <stdio.h>
 #include <sys/types.h>
 #include <sys/resource.h>
 
@@ -37,6 +38,15 @@ typedef struct {
     bool enable_traces;       /* run the embedded OTLP/HTTP trace receiver    */
     bool wrap_otel;           /* true=kjson framing (default), false=bare json */
 } koltp_config;
+
+/* --------------------------------------------------------------- cli args  */
+
+/* Print the usage/help text to the given stream. */
+void usage(FILE *f);
+/* Parse argv into cfg, applying defaults. Returns 0 on success, -1 on a usage
+ * error (a message is printed to stderr). Exits the process for --help and
+ * --version. */
+int parse_args(int argc, char **argv, koltp_config *cfg);
 
 /* ------------------------------------------------------ dynamic string buf */
 

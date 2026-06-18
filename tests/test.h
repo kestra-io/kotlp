@@ -56,5 +56,6 @@ extern const char *g_current_test;
 void test_json(void);
 void test_util(void);
 void test_otel(void);
+void test_args(void);
 
 #endif /* KOLTP_TEST_H */
