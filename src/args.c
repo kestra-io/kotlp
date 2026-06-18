@@ -37,6 +37,9 @@ void usage(FILE *f) {
         "  -d, --debug              keep all telemetry (metrics, traces, the\n"
         "                           OTEL_* env) but print the child's logs raw,\n"
         "                           and dump the OTEL_* env to stderr\n"
+        "  -P, --protocol PROTO     OTLP protocol the child exports with\n"
+        "                           (default: json): 'json' or 'protobuf'\n"
+        "                           (the receiver accepts both)\n"
         "  -f, --format FORMAT      output format (default: kjson):\n"
         "                             kjson - ::{\"oltp\":<json>}:: framed records\n"
         "                             json  - bare OTLP JSON (newline-delimited)\n"
@@ -53,6 +56,7 @@ int parse_args(int argc, char **argv, koltp_config *cfg) {
     cfg->enable_traces = true;
     cfg->wrap_otel = true;
     cfg->debug = false;
+    cfg->otlp_protocol = NULL;
     cfg->argv = NULL;
     cfg->argc = 0;
 
@@ -94,6 +98,23 @@ int parse_args(int argc, char **argv, koltp_config *cfg) {
             /* keep the full telemetry env (receiver, metrics, OTEL_* vars)
              * but print the child's stdout/stderr raw for readability */
             cfg->debug = true;
+        } else if (strcmp(a, "-P") == 0 || strcmp(a, "--protocol") == 0) {
+            if (++i >= argc) goto missing;
+            /* the embedded receiver decodes both; this picks what the child
+             * emits. Accept the short and canonical OTLP spellings. */
+            if (strcmp(argv[i], "json") == 0 ||
+                strcmp(argv[i], "http/json") == 0) {
+                cfg->otlp_protocol = "http/json";
+            } else if (strcmp(argv[i], "protobuf") == 0 ||
+                       strcmp(argv[i], "http/protobuf") == 0) {
+                cfg->otlp_protocol = "http/protobuf";
+            } else {
+                fprintf(stderr,
+                        "koltp: invalid protocol '%s' (expected 'json' or "
+                        "'protobuf')\n",
+                        argv[i]);
+                return -1;
+            }
         } else if (strcmp(a, "-f") == 0 || strcmp(a, "--format") == 0) {
             if (++i >= argc) goto missing;
             if (strcmp(argv[i], "kjson") == 0) {

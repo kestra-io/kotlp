@@ -84,6 +84,8 @@ Options:
   -d, --debug              keep all telemetry (metrics, traces, the OTEL_*
                            env) but print the child's logs raw, and dump
                            the OTEL_* env to stderr
+  -P, --protocol PROTO     OTLP protocol the child exports with (default:
+                           json): 'json' or 'protobuf' (receiver accepts both)
   -f, --format FORMAT      output format (default: kjson):
                              kjson - ::{"oltp":<json>}:: framed records
                              json  - bare OTLP JSON (newline-delimited)
@@ -135,13 +137,21 @@ The receiver accepts both OTLP/HTTP encodings on the same port:
 - **`http/protobuf`** — decoded into the equivalent OTLP/JSON, so downstream
   consumers always see one consistent NDJSON format.
 
-`koltp` defaults the child to `http/json`, but leaves `OTEL_EXPORTER_OTLP_PROTOCOL`
-/ `OTEL_EXPORTER_OTLP_TRACES_PROTOCOL` untouched if you set them, so you can opt
-into `http/protobuf`:
+`koltp` defaults the child to `http/json`. Switch it with `--protocol`:
+
+```
+koltp --protocol protobuf -- ./your-app
+```
+
+Without `--protocol`, koltp leaves `OTEL_EXPORTER_OTLP_PROTOCOL` /
+`OTEL_EXPORTER_OTLP_TRACES_PROTOCOL` untouched if you set them yourself, so the
+env still works too:
 
 ```
 OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf koltp -- ./your-app
 ```
+
+(An explicit `--protocol` takes precedence over those env vars.)
 
 Either way the spans are emitted alongside `koltp`'s own root span. (The receiver
 expects **uncompressed** bodies — gzip payloads are not decoded — and speaks

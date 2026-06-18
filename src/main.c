@@ -42,11 +42,14 @@ int main(int argc, char **argv) {
             snprintf(endpoint, sizeof(endpoint), "http://127.0.0.1:%d",
                      traces_port(traces));
             setenv("OTEL_EXPORTER_OTLP_ENDPOINT", endpoint, 1);
-            /* Default the child to http/json, but let the user opt into
-             * http/protobuf (the receiver decodes both) by leaving any
-             * pre-set protocol untouched (overwrite=0). */
-            setenv("OTEL_EXPORTER_OTLP_PROTOCOL", "http/json", 0);
-            setenv("OTEL_EXPORTER_OTLP_TRACES_PROTOCOL", "http/json", 0);
+            /* The receiver decodes both http/json and http/protobuf. With
+             * --protocol the choice is explicit and wins; otherwise default to
+             * http/json but leave any pre-set OTEL_* protocol untouched. */
+            const char *proto = cfg.otlp_protocol ? cfg.otlp_protocol
+                                                  : "http/json";
+            int proto_force = cfg.otlp_protocol ? 1 : 0;
+            setenv("OTEL_EXPORTER_OTLP_PROTOCOL", proto, proto_force);
+            setenv("OTEL_EXPORTER_OTLP_TRACES_PROTOCOL", proto, proto_force);
             /* Force uncompressed bodies: the receiver does not decompress. */
             setenv("OTEL_EXPORTER_OTLP_COMPRESSION", "none", 1);
             setenv("OTEL_TRACES_EXPORTER", "otlp", 1);

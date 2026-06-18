@@ -108,6 +108,52 @@ static void test_debug_default_off(void) {
     CHECK(cfg.debug == false);
 }
 
+/* --protocol selects what the child exports; default leaves it unset so the
+ * OTEL_* env can still override it. */
+static void test_protocol_default_unset(void) {
+    clear_env();
+    char *argv[] = {"koltp", "echo", NULL};
+    koltp_config cfg;
+    CHECK(parse_args(2, argv, &cfg) == 0);
+    CHECK(cfg.otlp_protocol == NULL);
+}
+
+static void test_protocol_json(void) {
+    clear_env();
+    char *argv[] = {"koltp", "--protocol", "json", "echo", NULL};
+    koltp_config cfg;
+    CHECK(parse_args(4, argv, &cfg) == 0);
+    CHECK(cfg.otlp_protocol != NULL);
+    CHECK_STR_EQ(cfg.otlp_protocol, "http/json");
+}
+
+static void test_protocol_protobuf_aliases(void) {
+    clear_env();
+    /* short alias */
+    char *argv1[] = {"koltp", "-P", "protobuf", "echo", NULL};
+    koltp_config cfg;
+    CHECK(parse_args(4, argv1, &cfg) == 0);
+    CHECK_STR_EQ(cfg.otlp_protocol, "http/protobuf");
+    /* canonical spelling */
+    char *argv2[] = {"koltp", "--protocol", "http/protobuf", "echo", NULL};
+    CHECK(parse_args(4, argv2, &cfg) == 0);
+    CHECK_STR_EQ(cfg.otlp_protocol, "http/protobuf");
+}
+
+static void test_protocol_invalid(void) {
+    clear_env();
+    char *argv[] = {"koltp", "--protocol", "grpc", "echo", NULL};
+    koltp_config cfg;
+    CHECK(parse_args(4, argv, &cfg) == -1);
+}
+
+static void test_protocol_missing_arg(void) {
+    clear_env();
+    char *argv[] = {"koltp", "--protocol", NULL};
+    koltp_config cfg;
+    CHECK(parse_args(2, argv, &cfg) == -1);
+}
+
 static void test_no_command_is_error(void) {
     clear_env();
     char *argv[] = {"koltp", "-r", NULL};
@@ -124,5 +170,10 @@ void test_args(void) {
     test_debug_long();
     test_debug_short();
     test_debug_default_off();
+    test_protocol_default_unset();
+    test_protocol_json();
+    test_protocol_protobuf_aliases();
+    test_protocol_invalid();
+    test_protocol_missing_arg();
     test_no_command_is_error();
 }

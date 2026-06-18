@@ -38,6 +38,9 @@ typedef struct {
     bool enable_traces;       /* run the embedded OTLP/HTTP trace receiver    */
     bool wrap_otel;           /* true=kjson framing (default), false=bare json */
     bool debug;               /* keep all telemetry env, but show logs raw    */
+    const char *otlp_protocol;/* child OTLP protocol override: "http/json" or
+                               * "http/protobuf"; NULL = default (http/json,
+                               * still overridable via the OTEL_* env)        */
 } koltp_config;
 
 /* --------------------------------------------------------------- cli args  */
