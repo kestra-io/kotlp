@@ -37,6 +37,7 @@ typedef struct {
     bool enable_metrics;      /* sample child resource usage                  */
     bool enable_traces;       /* run the embedded OTLP/HTTP trace receiver    */
     bool wrap_otel;           /* true=kjson framing (default), false=bare json */
+    bool debug;               /* keep all telemetry env, but show logs raw    */
 } koltp_config;
 
 /* --------------------------------------------------------------- cli args  */

@@ -10,10 +10,20 @@
 #include <sys/wait.h>
 #include <unistd.h>
 
+extern char **environ;
+
 static volatile sig_atomic_t g_child_pid = 0;
 
 static void forward_signal(int sig) {
     if (g_child_pid > 0) kill(g_child_pid, sig);
+}
+
+/* Print every OTEL_* environment variable the child will inherit, so it is
+ * clear which telemetry configuration koltp is sending. */
+static void debug_dump_env(void) {
+    for (char **e = environ; e && *e; e++) {
+        if (strncmp(*e, "OTEL_", 5) == 0) fprintf(stderr, "koltp: env %s\n", *e);
+    }
 }
 
 int main(int argc, char **argv) {
@@ -42,6 +52,8 @@ int main(int argc, char **argv) {
             setenv("OTEL_TRACES_EXPORTER", "otlp", 1);
         }
     }
+
+    if (cfg.debug) debug_dump_env();
 
     char trace_id[33];
     char span_id[17];

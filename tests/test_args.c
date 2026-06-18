@@ -77,6 +77,37 @@ static void test_raw_with_other_options(void) {
     CHECK_STR_EQ(cfg.service_name, "svc");
 }
 
+/* -d/--debug shows logs raw but keeps every telemetry feature (and the env)
+ * enabled - it is NOT the same as --raw / --no-*. */
+static void test_debug_long(void) {
+    clear_env();
+    char *argv[] = {"koltp", "--debug", "echo", "hi", NULL};
+    koltp_config cfg;
+    CHECK(parse_args(4, argv, &cfg) == 0);
+    CHECK(cfg.debug == true);
+    /* telemetry stays on so the OTEL_* env is still sent to the child */
+    CHECK(cfg.enable_logs == true);
+    CHECK(cfg.enable_metrics == true);
+    CHECK(cfg.enable_traces == true);
+}
+
+static void test_debug_short(void) {
+    clear_env();
+    char *argv[] = {"koltp", "-d", "echo", NULL};
+    koltp_config cfg;
+    CHECK(parse_args(3, argv, &cfg) == 0);
+    CHECK(cfg.debug == true);
+    CHECK(cfg.enable_traces == true);
+}
+
+static void test_debug_default_off(void) {
+    clear_env();
+    char *argv[] = {"koltp", "echo", NULL};
+    koltp_config cfg;
+    CHECK(parse_args(2, argv, &cfg) == 0);
+    CHECK(cfg.debug == false);
+}
+
 static void test_no_command_is_error(void) {
     clear_env();
     char *argv[] = {"koltp", "-r", NULL};
@@ -90,5 +121,8 @@ void test_args(void) {
     test_raw_long();
     test_raw_short();
     test_raw_with_other_options();
+    test_debug_long();
+    test_debug_short();
+    test_debug_default_off();
     test_no_command_is_error();
 }

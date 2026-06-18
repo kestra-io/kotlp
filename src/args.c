@@ -34,6 +34,9 @@ void usage(FILE *f) {
         "      --no-traces          disable the embedded trace receiver\n"
         "  -r, --raw                disable everything (equivalent to\n"
         "                           --no-logs --no-metrics --no-traces)\n"
+        "  -d, --debug              keep all telemetry (metrics, traces, the\n"
+        "                           OTEL_* env) but print the child's logs raw,\n"
+        "                           and dump the OTEL_* env to stderr\n"
         "  -f, --format FORMAT      output format (default: kjson):\n"
         "                             kjson - ::{\"oltp\":<json>}:: framed records\n"
         "                             json  - bare OTLP JSON (newline-delimited)\n"
@@ -49,6 +52,7 @@ int parse_args(int argc, char **argv, koltp_config *cfg) {
     cfg->enable_metrics = true;
     cfg->enable_traces = true;
     cfg->wrap_otel = true;
+    cfg->debug = false;
     cfg->argv = NULL;
     cfg->argc = 0;
 
@@ -86,6 +90,10 @@ int parse_args(int argc, char **argv, koltp_config *cfg) {
             cfg->enable_logs = false;
             cfg->enable_metrics = false;
             cfg->enable_traces = false;
+        } else if (strcmp(a, "-d") == 0 || strcmp(a, "--debug") == 0) {
+            /* keep the full telemetry env (receiver, metrics, OTEL_* vars)
+             * but print the child's stdout/stderr raw for readability */
+            cfg->debug = true;
         } else if (strcmp(a, "-f") == 0 || strcmp(a, "--format") == 0) {
             if (++i >= argc) goto missing;
             if (strcmp(argv[i], "kjson") == 0) {

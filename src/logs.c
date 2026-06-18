@@ -46,11 +46,12 @@ static void emit_log_line(const koltp_config *cfg, pid_t child_pid,
     sb_free(&out);
 }
 
-/* Emit one captured line, or - when log capture is disabled - pass the raw
- * line through to the corresponding console stream untouched. */
+/* Emit one captured line. Pass the raw line through untouched when log capture
+ * is disabled (--no-logs) or in --debug mode (telemetry stays on, but logs are
+ * shown verbatim for readability); otherwise emit it as an OTLP log record. */
 static void emit_or_passthrough(const koltp_config *cfg, pid_t child_pid,
                                 stream_state *st) {
-    if (cfg->enable_logs) {
+    if (cfg->enable_logs && !cfg->debug) {
         emit_log_line(cfg, child_pid, st, st->line.buf ? st->line.buf : "",
                       st->line.len);
     } else {

@@ -81,6 +81,9 @@ Options:
       --no-traces          disable the embedded trace receiver
   -r, --raw                disable everything (equivalent to
                            --no-logs --no-metrics --no-traces)
+  -d, --debug              keep all telemetry (metrics, traces, the OTEL_*
+                           env) but print the child's logs raw, and dump
+                           the OTEL_* env to stderr
   -f, --format FORMAT      output format (default: kjson):
                              kjson - ::{"oltp":<json>}:: framed records
                              json  - bare OTLP JSON (newline-delimited)
