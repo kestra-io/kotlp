@@ -58,5 +58,6 @@ void test_util(void);
 void test_otel(void);
 void test_args(void);
 void test_child(void);
+void test_otlp_pb(void);
 
 #endif /* KOLTP_TEST_H */

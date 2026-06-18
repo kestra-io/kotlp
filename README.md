@@ -119,16 +119,30 @@ actually bound — so most OpenTelemetry SDKs auto-configure themselves:
 
 ```
 OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:4318
-OTEL_EXPORTER_OTLP_PROTOCOL=http/json
-OTEL_EXPORTER_OTLP_TRACES_PROTOCOL=http/json
+OTEL_EXPORTER_OTLP_PROTOCOL=http/json        # only if not already set
+OTEL_EXPORTER_OTLP_TRACES_PROTOCOL=http/json # only if not already set
 OTEL_EXPORTER_OTLP_COMPRESSION=none
 OTEL_TRACES_EXPORTER=otlp
 OTEL_SERVICE_NAME=<service name>
 ```
 
-Any spans your application emits over OTLP/HTTP+JSON are forwarded to the
-console verbatim, alongside `koltp`'s own root span. (The receiver expects
-**uncompressed JSON**; protobuf and gzip payloads are not decoded.)
+The receiver accepts both OTLP/HTTP encodings on the same port:
+
+- **`http/json`** — forwarded to the console verbatim.
+- **`http/protobuf`** — decoded into the equivalent OTLP/JSON, so downstream
+  consumers always see one consistent NDJSON format.
+
+`koltp` defaults the child to `http/json`, but leaves `OTEL_EXPORTER_OTLP_PROTOCOL`
+/ `OTEL_EXPORTER_OTLP_TRACES_PROTOCOL` untouched if you set them, so you can opt
+into `http/protobuf`:
+
+```
+OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf koltp -- ./your-app
+```
+
+Either way the spans are emitted alongside `koltp`'s own root span. (The receiver
+expects **uncompressed** bodies — gzip payloads are not decoded — and speaks
+OTLP over HTTP only, not gRPC.)
 
 ## Platform notes
 
@@ -195,11 +209,13 @@ Source layout:
 
 ```
 include/koltp.h   shared declarations
-src/main.c       arg parsing, orchestration, signal/exit proxying
-src/child.c      fork/exec with piped stdout/stderr
+src/main.c       orchestration, signal/exit proxying
+src/args.c       command-line parsing
+src/child.c      fork/exec with piped stdout/stderr; exit-code mapping
 src/logs.c       stdout/stderr -> OTLP log records
 src/metrics.c    /proc + rusage sampling -> OTLP metrics
 src/traces.c     embedded OTLP/HTTP receiver + root span
+src/otlp_pb.c    OTLP/protobuf trace payload -> OTLP/JSON decoder
 src/otel.c       OTLP/JSON building blocks + thread-safe console sink
 src/json.c       growable string buffer with JSON escaping
 src/util.c       time, random ids, hostname

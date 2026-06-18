@@ -1,9 +1,11 @@
 /* traces.c - embedded OTLP/HTTP trace receiver and wrapper root span.
  *
  * We bind a tiny HTTP server on 127.0.0.1:<port> and advertise it to the child
- * via OTEL_EXPORTER_OTLP_* env vars (see main.c). Any spans the child's OTel
- * SDK exports over OTLP/HTTP+JSON are forwarded verbatim to the console as
- * NDJSON. We also synthesize one root span covering the whole execution. */
+ * via OTEL_EXPORTER_OTLP_* env vars (see main.c). Spans the child's OTel SDK
+ * exports over OTLP/HTTP are emitted to the console as NDJSON: http/json bodies
+ * are forwarded verbatim, http/protobuf bodies are decoded to the same JSON
+ * shape (see otlp_pb.c). We also synthesize one root span covering the whole
+ * execution. */
 #include "koltp.h"
 
 #include <arpa/inet.h>
@@ -48,6 +50,36 @@ static long parse_content_length(const char *headers) {
     return -1;
 }
 
+/* Case-insensitive substring search within the first `len` bytes of `hay`. */
+static bool ci_contains(const char *hay, size_t len, const char *needle) {
+    size_t nl = strlen(needle);
+    if (nl == 0) return true;
+    if (len < nl) return false;
+    for (size_t i = 0; i + nl <= len; i++) {
+        if (strncasecmp(hay + i, needle, nl) == 0) return true;
+    }
+    return false;
+}
+
+/* True when the Content-Type header advertises protobuf rather than JSON.
+ * `header_len` bounds the scan to the request headers (never the binary body).*/
+static bool body_is_protobuf(const char *headers, size_t header_len) {
+    const char *p = headers;
+    const char *limit = headers + header_len;
+    while (p < limit) {
+        if (strncasecmp(p, "content-type:", 13) == 0) {
+            const char *v = p + 13;
+            const char *nl = memchr(v, '\n', (size_t)(limit - v));
+            size_t vl = nl ? (size_t)(nl - v) : (size_t)(limit - v);
+            return ci_contains(v, vl, "protobuf");
+        }
+        const char *nl = memchr(p, '\n', (size_t)(limit - p));
+        if (!nl) break;
+        p = nl + 1;
+    }
+    return false; /* default to JSON (OTLP/HTTP default is also JSON-friendly) */
+}
+
 static void handle_conn(trace_receiver *t, int fd) {
     (void)t;
     sb req;
@@ -80,14 +112,22 @@ static void handle_conn(trace_receiver *t, int fd) {
 
     if (header_end >= 0 && content_length > 0 &&
         (long)req.len >= body_start + content_length) {
+        const char *body = req.buf + body_start;
         sb out;
         sb_init(&out);
-        /* Forward the OTLP/JSON span payload verbatim as one NDJSON record,
-         * collapsing any pretty-print newlines so it stays single-line. */
-        for (long i = 0; i < content_length; i++) {
-            char c = req.buf[body_start + i];
-            if (c == '\n' || c == '\r') continue;
-            sb_putc(&out, c);
+        if (body_is_protobuf(req.buf, (size_t)header_end)) {
+            /* http/protobuf: decode the binary OTLP payload into the same
+             * OTLP/JSON shape the http/json path forwards. */
+            otlp_traces_pb_to_json(&out, (const uint8_t *)body,
+                                   (size_t)content_length);
+        } else {
+            /* http/json: forward the payload verbatim as one NDJSON record,
+             * collapsing any pretty-print newlines so it stays single-line. */
+            for (long i = 0; i < content_length; i++) {
+                char c = body[i];
+                if (c == '\n' || c == '\r') continue;
+                sb_putc(&out, c);
+            }
         }
         if (out.len > 0) otel_emit(STDOUT_FILENO, &out);
         sb_free(&out);

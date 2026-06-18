@@ -85,6 +85,12 @@ void otel_emit_raw(int fd, const char *data, size_t len);
 /* Call once from main() before any worker thread starts. */
 void otel_emit_init(bool wrap_otel);
 
+/* Decode an OTLP/protobuf trace payload (ExportTraceServiceRequest, which is
+ * wire-compatible with TracesData) into the equivalent OTLP/JSON, appended to
+ * `out`. Used to normalise `http/protobuf` exports to the same NDJSON shape as
+ * `http/json`. Malformed input yields a best-effort partial object. */
+void otlp_traces_pb_to_json(sb *out, const uint8_t *data, size_t len);
+
 /* Append an OTLP resource object: "resource":{...} (no leading/trailing comma) */
 void otel_resource(sb *s, const koltp_config *cfg, pid_t child_pid);
 /* Append one OTLP key/value attribute object: {"key":..,"value":{..}} */

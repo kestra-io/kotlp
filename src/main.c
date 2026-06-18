@@ -32,8 +32,12 @@ int main(int argc, char **argv) {
             snprintf(endpoint, sizeof(endpoint), "http://127.0.0.1:%d",
                      traces_port(traces));
             setenv("OTEL_EXPORTER_OTLP_ENDPOINT", endpoint, 1);
-            setenv("OTEL_EXPORTER_OTLP_PROTOCOL", "http/json", 1);
-            setenv("OTEL_EXPORTER_OTLP_TRACES_PROTOCOL", "http/json", 1);
+            /* Default the child to http/json, but let the user opt into
+             * http/protobuf (the receiver decodes both) by leaving any
+             * pre-set protocol untouched (overwrite=0). */
+            setenv("OTEL_EXPORTER_OTLP_PROTOCOL", "http/json", 0);
+            setenv("OTEL_EXPORTER_OTLP_TRACES_PROTOCOL", "http/json", 0);
+            /* Force uncompressed bodies: the receiver does not decompress. */
             setenv("OTEL_EXPORTER_OTLP_COMPRESSION", "none", 1);
             setenv("OTEL_TRACES_EXPORTER", "otlp", 1);
         }
