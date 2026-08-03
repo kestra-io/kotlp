@@ -13,10 +13,10 @@ jobs:
     name: Build & test (Linux)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Cache cosmocc toolchain
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: build/cosmocc
           key: cosmocc-${{ hashFiles('Makefile') }}
@@ -31,7 +31,7 @@ jobs:
         run: make test
 
       - name: Upload artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: koltp-ape
           path: |
@@ -46,14 +46,15 @@ jobs:
       fail-fast: false
       matrix:
         # The exact same APEs produced on Linux are executed unmodified here,
-        # proving the "build once, run anywhere" property (incl. arm64 macOS).
-        os: [macos-13, macos-14]
+        # proving the "build once, run anywhere" property. macos-26 is arm64,
+        # macos-26-intel is x64, so both macOS architectures are covered.
+        os: [macos-26, macos-26-intel]
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Download artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: koltp-ape
           path: build
