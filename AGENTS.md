@@ -34,6 +34,12 @@ span) and **metrics** (process resource sampling). Output is NDJSON.
    `::{"oltp":<json>}::` (`-f kjson`); `-f json` (`cfg.wrap_otel == false`) emits the bare
    record. Raw child passthrough (when `--no-logs` is set) goes through
    `otel_emit_raw()` and is **never** framed. Keep that distinction intact.
+7. **The file sink is a tee, not a redirect.** With `--log-dir`, `otel_emit()`
+   also hands the record to `filesink_write()` — always the **bare** JSON, never
+   framed, because the file is NDJSON. Console output must stay byte-identical to
+   a run without the option, and `otel_emit_raw()` must never reach the sink.
+   `filesink_write()` runs under `otel_emit()`'s mutex, so it takes no lock of
+   its own; do not call it from anywhere else.
 
 ## Build & test
 
@@ -76,6 +82,7 @@ single binary + SHA-256 to a GitHub Release.
 | `src/metrics.c`  | `/proc` (Linux) + `rusage` sampling → OTLP metrics |
 | `src/traces.c`   | Embedded OTLP/HTTP receiver + synthetic root span |
 | `src/otel.c`     | OTLP/JSON resource/attribute builders + thread-safe sink |
+| `src/filesink.c` | `--log-dir` NDJSON file sink + `--log-flush-interval` rotation |
 | `src/json.c`     | Growable string buffer (`sb`) + JSON escaping |
 | `src/util.c`     | Monotonic-ish time, random trace/span ids, hostname |
 
@@ -89,6 +96,8 @@ single binary + SHA-256 to a GitHub Release.
 - Keep semantic-convention names accurate: `process.cpu.time`,
   `process.memory.usage`, `process.disk.io` (+ `disk.io.direction`),
   `process.open_file_descriptor.count`, `log.iostream`, `process.exit.code`.
+  Attributes with no semantic convention behind them get a `koltp.` prefix
+  (e.g. `koltp.log.file.count`) so they are clearly ours.
 - Bump `KOLTP_VERSION` in `include/koltp.h` when cutting a release tag.
 
 ## Things to be careful about

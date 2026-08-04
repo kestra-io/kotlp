@@ -90,4 +90,48 @@ wait "$HOLD_PID" 2>/dev/null || true
 grep -q 'resourceSpans' "$POUT" || \
     fail "trace receiver did not fall back when port $HOLD_PORT was busy"
 
+# 11. --log-dir mirrors every record into DIR/log.ndjson as *bare* NDJSON while
+#     the console keeps its framing. The directory is created if it is missing
+#     (including parents).
+LOGDIR="$TMP/nested/logs"
+LOUT="$TMP/logdir-console.ndjson"
+"$BIN" -s smoke-logdir -i 200 --log-dir "$LOGDIR" -- \
+    sh -c 'echo to-file' >"$LOUT" 2>/dev/null
+NDJSON="$LOGDIR/log.ndjson"
+[ -f "$NDJSON" ] || fail "--log-dir did not create $NDJSON"
+grep -q '"to-file"' "$NDJSON"       || fail "--log-dir: missing log body"
+grep -q 'resourceLogs' "$NDJSON"    || fail "--log-dir: missing resourceLogs"
+grep -q 'resourceMetrics' "$NDJSON" || fail "--log-dir: missing resourceMetrics"
+grep -q 'resourceSpans' "$NDJSON"   || fail "--log-dir: missing resourceSpans"
+# the file is always bare, even though this run used the default -f kjson...
+if grep -q '::{"oltp":' "$NDJSON"; then fail "--log-dir output must not be framed"; fi
+# ...and the console output is unchanged (file output is additive, not a redirect)
+grep -q '::{"oltp":' "$LOUT" || fail "--log-dir must not silence the console"
+grep -q '"to-file"' "$LOUT"  || fail "--log-dir must not silence the console logs"
+# without --log-flush-interval there is no rotation and no file count reported
+if grep -q 'koltp.log.file.count' "$NDJSON"; then
+    fail "koltp.log.file.count must only appear with --log-flush-interval"
+fi
+
+# 12. --log-flush-interval rotates into log-N.ndjson and reports how many files
+#     were produced on the root span (which lands in the last one).
+ROTDIR="$TMP/rotated"
+"$BIN" -s smoke-rotate -i 200 --log-dir "$ROTDIR" --log-flush-interval 1 -- \
+    sh -c 'for i in 1 2 3; do echo tick; sleep 1; done' >/dev/null 2>&1
+if [ -f "$ROTDIR/log.ndjson" ]; then fail "rotation must not write log.ndjson"; fi
+ROT_FILES="$(ls "$ROTDIR"/log-*.ndjson 2>/dev/null | wc -l | tr -d ' ')"
+[ "$ROT_FILES" -ge 2 ] || fail "expected >= 2 rotated files, got $ROT_FILES"
+[ -f "$ROTDIR/log-1.ndjson" ] || fail "rotation must start at log-1.ndjson"
+# the count is reported exactly once, in the highest-numbered file...
+COUNT_HITS="$(grep -l 'koltp.log.file.count' "$ROTDIR"/log-*.ndjson | wc -l | tr -d ' ')"
+[ "$COUNT_HITS" -eq 1 ] || fail "koltp.log.file.count in $COUNT_HITS files, want 1"
+LAST="$ROTDIR/log-$ROT_FILES.ndjson"
+grep -q 'koltp.log.file.count' "$LAST" || \
+    fail "koltp.log.file.count should be in the last file ($LAST)"
+# ...and it matches the number of files actually on disk
+REPORTED="$(grep -o 'koltp\.log\.file\.count","value":{"intValue":"[0-9]*' "$LAST" \
+    | sed 's/.*"//')"
+[ "$REPORTED" = "$ROT_FILES" ] || \
+    fail "koltp.log.file.count is $REPORTED but $ROT_FILES files exist"
+
 echo "smoke_test: PASS"

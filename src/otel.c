@@ -18,7 +18,7 @@ void otel_emit_init(bool wrap_otel) {
     pthread_mutex_init(&g_out_mu, NULL);
 }
 
-static void full_write(int fd, const char *data, size_t len) {
+void koltp_full_write(int fd, const char *data, size_t len) {
     size_t off = 0;
     while (off < len) {
         ssize_t w = write(fd, data + off, len - off);
@@ -31,17 +31,21 @@ void otel_emit(int fd, const sb *s) {
     static const char prefix[] = "::{\"oltp\":";
     static const char suffix[] = "}::";
     pthread_mutex_lock(&g_out_mu);
-    if (g_wrap_otel) full_write(fd, prefix, sizeof(prefix) - 1);
-    full_write(fd, s->buf ? s->buf : "", s->len);
-    if (g_wrap_otel) full_write(fd, suffix, sizeof(suffix) - 1);
-    full_write(fd, "\n", 1);
+    if (g_wrap_otel) koltp_full_write(fd, prefix, sizeof(prefix) - 1);
+    koltp_full_write(fd, s->buf ? s->buf : "", s->len);
+    if (g_wrap_otel) koltp_full_write(fd, suffix, sizeof(suffix) - 1);
+    koltp_full_write(fd, "\n", 1);
+    /* Tee to --log-dir, if enabled: always the bare record, never framed. Runs
+     * under the same mutex so file lines cannot interleave either. */
+    filesink_write(s->buf ? s->buf : "", s->len);
     pthread_mutex_unlock(&g_out_mu);
 }
 
 void otel_emit_raw(int fd, const char *data, size_t len) {
+    /* Raw child bytes are not OTLP JSON, so they never go to the file sink. */
     pthread_mutex_lock(&g_out_mu);
-    full_write(fd, data, len);
-    full_write(fd, "\n", 1);
+    koltp_full_write(fd, data, len);
+    koltp_full_write(fd, "\n", 1);
     pthread_mutex_unlock(&g_out_mu);
 }
 

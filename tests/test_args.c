@@ -161,6 +161,80 @@ static void test_no_command_is_error(void) {
     CHECK(parse_args(2, argv, &cfg) == -1);
 }
 
+/* --log-dir / --log-flush-interval: the file sink is off unless asked for. */
+static void test_log_dir_default_off(void) {
+    clear_env();
+    char *argv[] = {"koltp", "echo", NULL};
+    koltp_config cfg;
+    CHECK(parse_args(2, argv, &cfg) == 0);
+    CHECK(cfg.log_dir == NULL);
+    CHECK(cfg.log_flush_interval_s == 0);
+}
+
+static void test_log_dir(void) {
+    clear_env();
+    char *argv[] = {"koltp", "--log-dir", "/tmp/koltp-logs", "echo", NULL};
+    koltp_config cfg;
+    CHECK(parse_args(4, argv, &cfg) == 0);
+    CHECK(cfg.log_dir != NULL);
+    CHECK_STR_EQ(cfg.log_dir, "/tmp/koltp-logs");
+    /* no rotation unless --log-flush-interval is given */
+    CHECK(cfg.log_flush_interval_s == 0);
+}
+
+static void test_log_flush_interval(void) {
+    clear_env();
+    char *argv[] = {"koltp", "--log-dir", "/tmp/koltp-logs",
+                    "--log-flush-interval", "5", "echo", NULL};
+    koltp_config cfg;
+    CHECK(parse_args(6, argv, &cfg) == 0);
+    CHECK_STR_EQ(cfg.log_dir, "/tmp/koltp-logs");
+    CHECK(cfg.log_flush_interval_s == 5);
+}
+
+/* the two options may be given in either order */
+static void test_log_flush_interval_before_dir(void) {
+    clear_env();
+    char *argv[] = {"koltp", "--log-flush-interval", "2", "--log-dir",
+                    "/tmp/koltp-logs", "--", "echo", NULL};
+    koltp_config cfg;
+    CHECK(parse_args(7, argv, &cfg) == 0);
+    CHECK(cfg.log_flush_interval_s == 2);
+    CHECK_STR_EQ(cfg.log_dir, "/tmp/koltp-logs");
+}
+
+/* rotating without a destination directory is a usage error */
+static void test_log_flush_interval_requires_dir(void) {
+    clear_env();
+    char *argv[] = {"koltp", "--log-flush-interval", "5", "echo", NULL};
+    koltp_config cfg;
+    CHECK(parse_args(4, argv, &cfg) == -1);
+}
+
+static void test_log_flush_interval_invalid(void) {
+    clear_env();
+    koltp_config cfg;
+    char *zero[] = {"koltp", "--log-dir", "/tmp/x", "--log-flush-interval", "0",
+                    "echo", NULL};
+    CHECK(parse_args(6, zero, &cfg) == -1);
+    char *neg[] = {"koltp", "--log-dir", "/tmp/x", "--log-flush-interval", "-3",
+                   "echo", NULL};
+    CHECK(parse_args(6, neg, &cfg) == -1);
+    char *nan[] = {"koltp", "--log-dir", "/tmp/x", "--log-flush-interval",
+                   "soon", "echo", NULL};
+    CHECK(parse_args(6, nan, &cfg) == -1);
+}
+
+static void test_log_options_missing_arg(void) {
+    clear_env();
+    koltp_config cfg;
+    char *dir[] = {"koltp", "--log-dir", NULL};
+    CHECK(parse_args(2, dir, &cfg) == -1);
+    char *interval[] = {"koltp", "--log-dir", "/tmp/x", "--log-flush-interval",
+                        NULL};
+    CHECK(parse_args(4, interval, &cfg) == -1);
+}
+
 void test_args(void) {
     test_defaults();
     test_individual_disable_flags();
@@ -176,4 +250,11 @@ void test_args(void) {
     test_protocol_invalid();
     test_protocol_missing_arg();
     test_no_command_is_error();
+    test_log_dir_default_off();
+    test_log_dir();
+    test_log_flush_interval();
+    test_log_flush_interval_before_dir();
+    test_log_flush_interval_requires_dir();
+    test_log_flush_interval_invalid();
+    test_log_options_missing_arg();
 }

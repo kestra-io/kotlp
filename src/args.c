@@ -43,6 +43,14 @@ void usage(FILE *f) {
         "  -f, --format FORMAT      output format (default: kjson):\n"
         "                             kjson - ::{\"oltp\":<json>}:: framed records\n"
         "                             json  - bare OTLP JSON (newline-delimited)\n"
+        "      --log-dir DIR        also write every record as bare OTLP NDJSON\n"
+        "                           to DIR/log.ndjson (created if needed; the\n"
+        "                           console output is unchanged)\n"
+        "      --log-flush-interval SECONDS\n"
+        "                           rotate the log dir file every SECONDS into\n"
+        "                           log-1.ndjson, log-2.ndjson, ... and report\n"
+        "                           koltp.log.file.count on the root span\n"
+        "                           (requires --log-dir)\n"
         "  -V, --version            print version and exit\n"
         "  -h, --help               print this help and exit\n");
 }
@@ -57,6 +65,8 @@ int parse_args(int argc, char **argv, koltp_config *cfg) {
     cfg->wrap_otel = true;
     cfg->debug = false;
     cfg->otlp_protocol = NULL;
+    cfg->log_dir = NULL;
+    cfg->log_flush_interval_s = 0;
     cfg->argv = NULL;
     cfg->argc = 0;
 
@@ -115,6 +125,19 @@ int parse_args(int argc, char **argv, koltp_config *cfg) {
                         argv[i]);
                 return -1;
             }
+        } else if (strcmp(a, "--log-dir") == 0) {
+            if (++i >= argc) goto missing;
+            cfg->log_dir = argv[i];
+        } else if (strcmp(a, "--log-flush-interval") == 0) {
+            if (++i >= argc) goto missing;
+            cfg->log_flush_interval_s = strtol(argv[i], NULL, 10);
+            if (cfg->log_flush_interval_s < 1) {
+                fprintf(stderr,
+                        "koltp: invalid --log-flush-interval '%s' (expected a "
+                        "number of seconds >= 1)\n",
+                        argv[i]);
+                return -1;
+            }
         } else if (strcmp(a, "-f") == 0 || strcmp(a, "--format") == 0) {
             if (++i >= argc) goto missing;
             if (strcmp(argv[i], "kjson") == 0) {
@@ -135,6 +158,12 @@ int parse_args(int argc, char **argv, koltp_config *cfg) {
         continue;
     missing:
         fprintf(stderr, "koltp: option '%s' requires an argument\n", a);
+        return -1;
+    }
+
+    /* Checked after the loop so the two options may be given in either order. */
+    if (cfg->log_flush_interval_s > 0 && !cfg->log_dir) {
+        fprintf(stderr, "koltp: --log-flush-interval requires --log-dir\n");
         return -1;
     }
 

@@ -257,6 +257,13 @@ void traces_emit_root_span(const koltp_config *cfg, pid_t child_pid,
         sb_putc(&out, ',');
         otel_attr_int(&out, "process.exit.signal", term_signal);
     }
+    /* How many log-N.ndjson files --log-flush-interval produced. The sink is
+     * sealed before this span is built, so the count is final and this record
+     * lands in the last of those files. */
+    if (cfg->log_dir && cfg->log_flush_interval_s > 0) {
+        sb_putc(&out, ',');
+        otel_attr_int(&out, "koltp.log.file.count", filesink_file_count());
+    }
     sb_puts(&out, "],\"status\":{");
     if (exit_code == 0 && term_signal == 0) {
         sb_puts(&out, "\"code\":1"); /* STATUS_CODE_OK */

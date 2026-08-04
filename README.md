@@ -27,7 +27,9 @@ following OpenTelemetry [Semantic Conventions](https://opentelemetry.io/docs/spe
 
 Because everything is OTLP/JSON, you can pipe `koltp` output straight into an
 OpenTelemetry Collector, `jq`, or any log shipper (use `-f json` for bare,
-unframed records; see [Output framing](#output-framing)).
+unframed records; see [Output framing](#output-framing)). Add
+[`--log-dir`](#writing-telemetry-to-files---log-dir) to archive the same records
+to disk as well.
 
 ## Quick start
 
@@ -89,6 +91,14 @@ Options:
   -f, --format FORMAT      output format (default: kjson):
                              kjson - ::{"oltp":<json>}:: framed records
                              json  - bare OTLP JSON (newline-delimited)
+      --log-dir DIR        also write every record as bare OTLP NDJSON to
+                           DIR/log.ndjson (created if needed; the console
+                           output is unchanged)
+      --log-flush-interval SECONDS
+                           rotate the log dir file every SECONDS into
+                           log-1.ndjson, log-2.ndjson, ... and report
+                           koltp.log.file.count on the root span
+                           (requires --log-dir)
   -V, --version            print version and exit
   -h, --help               print help and exit
 ```
@@ -111,6 +121,46 @@ koltp -f json -- ./my-program 2>/dev/null | jq 'select(.resourceLogs)'
 
 The `--no-logs` passthrough output (raw child bytes) is never framed in either
 format.
+
+### Writing telemetry to files (`--log-dir`)
+
+`--log-dir DIR` mirrors every telemetry record into `DIR/log.ndjson`. This is
+**additive**: the console output is exactly what it would have been without the
+option, so you can keep piping stdout *and* archive a file.
+
+```sh
+koltp --log-dir ./telemetry -- ./my-program
+jq . ./telemetry/log.ndjson
+```
+
+The directory (and any missing parents) is created for you. File lines are
+**always bare OTLP JSON**, one record per line, regardless of `-f/--format` —
+the console keeps its framing, the `.ndjson` file stays directly consumable by
+`jq` and OpenTelemetry Collectors.
+
+Add `--log-flush-interval SECONDS` to roll the file, so a long run produces a
+sequence you can ship as each file closes:
+
+```sh
+koltp --log-dir ./telemetry --log-flush-interval 60 -- ./my-long-job
+# ./telemetry/log-1.ndjson  ./telemetry/log-2.ndjson  ./telemetry/log-3.ndjson ...
+```
+
+Rotation is **lazy**: the file rolls on the first record written after the
+interval has elapsed, and the index advances by one — so an idle stretch never
+leaves an empty file behind. The final root span records how many files were
+produced, and lands in the last of them:
+
+```json
+{ "key": "koltp.log.file.count", "value": { "intValue": "3" } }
+```
+
+That attribute is only present when `--log-flush-interval` is used;
+`--log-flush-interval` requires `--log-dir`.
+
+Because the file holds OTLP records only, the raw child bytes emitted by
+`--no-logs` and `-d/--debug` are *not* written to it — in those modes the file
+contains metrics and traces.
 
 `koltp` proxies the child's exit code (and reports `128 + signal` if the child
 was killed by a signal). `SIGINT`/`SIGTERM`/`SIGHUP` are forwarded to the child.
@@ -246,6 +296,7 @@ src/metrics.c    /proc + rusage sampling -> OTLP metrics
 src/traces.c     embedded OTLP/HTTP receiver + root span
 src/otlp_pb.c    OTLP/protobuf trace payload -> OTLP/JSON decoder
 src/otel.c       OTLP/JSON building blocks + thread-safe console sink
+src/filesink.c   optional --log-dir NDJSON file sink + rotation
 src/json.c       growable string buffer with JSON escaping
 src/util.c       time, random ids, hostname
 tests/           unit tests (test.h harness + test_*.c suites)

@@ -41,6 +41,10 @@ typedef struct {
     const char *otlp_protocol;/* child OTLP protocol override: "http/json" or
                                * "http/protobuf"; NULL = default (http/json,
                                * still overridable via the OTEL_* env)        */
+    const char *log_dir;      /* also write every record as bare OTLP NDJSON
+                               * into this directory; NULL = console only     */
+    long log_flush_interval_s;/* rotate the log dir file every N seconds;
+                               * 0 = a single log.ndjson, no rotation         */
 } koltp_config;
 
 /* --------------------------------------------------------------- cli args  */
@@ -88,6 +92,35 @@ void otel_emit(int fd, const sb *s);
 void otel_emit_raw(int fd, const char *data, size_t len);
 /* Call once from main() before any worker thread starts. */
 void otel_emit_init(bool wrap_otel);
+/* write() the whole buffer, retrying short writes. */
+void koltp_full_write(int fd, const char *data, size_t len);
+
+/* ---------------------------------------------------------------- file sink */
+
+/* Mirror every record emitted through otel_emit() into <log_dir>/log.ndjson as
+ * bare OTLP JSON (never framed), one record per line. With
+ * cfg->log_flush_interval_s > 0 the file is rotated every N seconds into
+ * log-1.ndjson, log-2.ndjson, ... Console output is unaffected either way.
+ * Call once from main() before any worker thread starts; a no-op returning true
+ * when cfg->log_dir is NULL. Returns false (after printing to stderr) when the
+ * directory or the first file cannot be created. */
+bool filesink_open(const koltp_config *cfg);
+/* Append one record. Called from otel_emit() with its console mutex already
+ * held, so this never locks (and must not be called from anywhere else). */
+void filesink_write(const char *json, size_t len);
+/* Stop rotating, so the final metrics/root-span records land in the last file
+ * and filesink_file_count() stays stable while they are built. */
+void filesink_seal(void);
+/* Number of files created so far (0 when the sink is disabled). */
+int filesink_file_count(void);
+void filesink_close(void);
+
+/* Write the file name for rotation index `i` into `out`: i <= 0 yields
+ * "log.ndjson", otherwise "log-<i>.ndjson". Pure; exposed for unit testing. */
+void koltp_log_file_name(char *out, size_t out_sz, int index);
+/* mkdir -p: create `path` and any missing parents. Returns 0 on success, -1
+ * with errno set otherwise. An already-existing directory is success. */
+int koltp_mkdir_p(const char *path);
 
 /* Decode an OTLP/protobuf trace payload (ExportTraceServiceRequest, which is
  * wire-compatible with TracesData) into the equivalent OTLP/JSON, appended to

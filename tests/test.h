@@ -60,5 +60,6 @@ void test_args(void);
 void test_child(void);
 void test_otlp_pb(void);
 void test_metrics(void);
+void test_filesink(void);
 
 #endif /* KOLTP_TEST_H */

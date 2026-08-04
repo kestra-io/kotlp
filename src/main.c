@@ -31,6 +31,9 @@ int main(int argc, char **argv) {
     if (parse_args(argc, argv, &cfg) != 0) return 2;
 
     otel_emit_init(cfg.wrap_otel);
+    /* Open --log-dir before anything can emit: if the user asked for files and
+     * we cannot create them, fail now rather than silently dropping them. */
+    if (!filesink_open(&cfg)) return 2;
     setenv("OTEL_SERVICE_NAME", cfg.service_name, 1);
 
     /* Start the embedded trace receiver and advertise it to the child. */
@@ -69,6 +72,7 @@ int main(int argc, char **argv) {
     pid_t pid = child_spawn(&cfg, &out_fd, &err_fd);
     if (pid < 0) {
         if (traces) traces_stop(traces);
+        filesink_close();
         return 1;
     }
     g_child_pid = pid;
@@ -103,10 +107,16 @@ int main(int argc, char **argv) {
 
     uint64_t end_ns = koltp_now_unix_nano();
 
+    /* Freeze rotation so these last records land in the file already open and
+     * the count the root span reports matches what is on disk. */
+    filesink_seal();
+
     if (cfg.enable_metrics) metrics_emit_final(&cfg, pid, &ru);
     if (cfg.enable_traces)
         traces_emit_root_span(&cfg, pid, trace_id, span_id, start_ns, end_ns,
                               exit_code, term_signal);
+
+    filesink_close();
 
     return exit_code;
 }
