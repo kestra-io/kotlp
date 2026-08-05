@@ -48,12 +48,21 @@ static void emit_log_line(const koltp_config *cfg, pid_t child_pid,
 
 /* Emit one captured line. Pass the raw line through untouched when log capture
  * is disabled (--no-logs) or in --debug mode (telemetry stays on, but logs are
- * shown verbatim for readability); otherwise emit it as an OTLP log record. */
+ * shown verbatim for readability); otherwise emit it as an OTLP log record.
+ *
+ * With --log-dir, the file already gets the full OTLP record (otel_emit tees
+ * to it and otel_emit_init silenced its console side), so the console would
+ * otherwise go silent for logs. Print the raw line there too, same as -r/--raw,
+ * so the console still shows the wrapped command's actual output. */
 static void emit_or_passthrough(const koltp_config *cfg, pid_t child_pid,
                                 stream_state *st) {
     if (cfg->enable_logs && !cfg->debug) {
         emit_log_line(cfg, child_pid, st, st->line.buf ? st->line.buf : "",
                       st->line.len);
+        if (cfg->log_dir) {
+            otel_emit_raw(st->dst_fd, st->line.buf ? st->line.buf : "",
+                          st->line.len);
+        }
     } else {
         /* passthrough: emit the child's bytes verbatim, never OTel-wrapped */
         otel_emit_raw(st->dst_fd, st->line.buf ? st->line.buf : "",

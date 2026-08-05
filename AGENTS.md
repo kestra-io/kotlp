@@ -38,12 +38,16 @@ span) and **metrics** (process resource sampling). Output is NDJSON.
    `::{"oltp":<json>}::` (`-f kjson`); `-f json` (`cfg.wrap_otel == false`) emits the bare
    record. Raw child passthrough (when `--no-logs` is set) goes through
    `otel_emit_raw()` and is **never** framed. Keep that distinction intact.
-7. **The file sink is a tee, not a redirect.** With `--log-dir`, `otel_emit()`
-   also hands the record to `filesink_write()` — always the **bare** JSON, never
-   framed, because the file is NDJSON. Console output must stay byte-identical to
-   a run without the option, and `otel_emit_raw()` must never reach the sink.
-   `filesink_write()` runs under `otel_emit()`'s mutex, so it takes no lock of
-   its own; do not call it from anywhere else.
+7. **The file sink is the one full copy; the console falls back to raw.** With
+   `--log-dir`, `otel_emit()` still hands every record to `filesink_write()` —
+   always the **bare** JSON, never framed, because the file is NDJSON — but
+   `otel_emit_init()`'s `console_quiet` makes `otel_emit()` skip its console
+   write entirely in that mode (set from `cfg->log_dir != NULL`). Logs still
+   need to appear somewhere readable, so `logs_pump()` prints the raw line via
+   `otel_emit_raw()` alongside the record whenever `cfg->log_dir` is set —
+   i.e. the console behaves like `-r/--raw`. `otel_emit_raw()` must never reach
+   the sink. `filesink_write()` runs under `otel_emit()`'s mutex, so it takes
+   no lock of its own; do not call it from anywhere else.
 
 ## Build & test
 

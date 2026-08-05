@@ -30,7 +30,7 @@ int main(int argc, char **argv) {
     koltp_config cfg;
     if (parse_args(argc, argv, &cfg) != 0) return 2;
 
-    otel_emit_init(cfg.wrap_otel);
+    otel_emit_init(cfg.wrap_otel, cfg.log_dir != NULL);
     /* Open --log-dir before anything can emit: if the user asked for files and
      * we cannot create them, fail now rather than silently dropping them. */
     if (!filesink_open(&cfg)) return 2;

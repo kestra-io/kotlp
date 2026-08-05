@@ -2,6 +2,8 @@
 #include "koltp.h"
 #include "test.h"
 
+#include <errno.h>
+#include <fcntl.h>
 #include <unistd.h>
 
 static void test_attr_str(void) {
@@ -80,19 +82,19 @@ static void test_emit_framing(void) {
     sb_puts(&s, "{\"a\":1}");
 
     /* default: framed as ::{"oltp":<json>}:: */
-    otel_emit_init(true);
+    otel_emit_init(true, false);
     otel_emit(p[1], &s);
     read_back(p[0], buf, sizeof(buf));
     CHECK_STR_EQ(buf, "::{\"oltp\":{\"a\":1}}::\n");
 
     /* -f json: bare JSON, no framing */
-    otel_emit_init(false);
+    otel_emit_init(false, false);
     otel_emit(p[1], &s);
     read_back(p[0], buf, sizeof(buf));
     CHECK_STR_EQ(buf, "{\"a\":1}\n");
 
     /* passthrough is never framed, even when framing is enabled */
-    otel_emit_init(true);
+    otel_emit_init(true, false);
     otel_emit_raw(p[1], "plain text", 10);
     read_back(p[0], buf, sizeof(buf));
     CHECK_STR_EQ(buf, "plain text\n");
@@ -102,9 +104,33 @@ static void test_emit_framing(void) {
     close(p[1]);
 }
 
+/* --log-dir: otel_emit's console side goes silent (the file gets the record
+ * instead; logs_pump is what prints the raw line on the console). */
+static void test_emit_console_quiet(void) {
+    int p[2];
+    CHECK(pipe(p) == 0);
+
+    sb s;
+    sb_init(&s);
+    sb_puts(&s, "{\"a\":1}");
+
+    otel_emit_init(true, true);
+    CHECK(fcntl(p[0], F_SETFL, O_NONBLOCK) == 0);
+    otel_emit(p[1], &s);
+    char buf[16];
+    ssize_t n = read(p[0], buf, sizeof(buf));
+    CHECK(n < 0 && errno == EAGAIN);
+
+    sb_free(&s);
+    close(p[0]);
+    close(p[1]);
+    otel_emit_init(true, false); /* restore default for any test that follows */
+}
+
 void test_otel(void) {
     test_attr_str();
     test_attr_int();
     test_resource();
     test_emit_framing();
+    test_emit_console_quiet();
 }

@@ -11,10 +11,12 @@
  * never interleaved at the byte level. */
 static pthread_mutex_t g_out_mu;
 static bool g_wrap_otel = true;
+static bool g_console_quiet = false;
 
 /* Called once from main() before any worker thread is started. */
-void otel_emit_init(bool wrap_otel) {
+void otel_emit_init(bool wrap_otel, bool console_quiet) {
     g_wrap_otel = wrap_otel;
+    g_console_quiet = console_quiet;
     pthread_mutex_init(&g_out_mu, NULL);
 }
 
@@ -31,10 +33,14 @@ void otel_emit(int fd, const sb *s) {
     static const char prefix[] = "::{\"oltp\":";
     static const char suffix[] = "}::";
     pthread_mutex_lock(&g_out_mu);
-    if (g_wrap_otel) koltp_full_write(fd, prefix, sizeof(prefix) - 1);
-    koltp_full_write(fd, s->buf ? s->buf : "", s->len);
-    if (g_wrap_otel) koltp_full_write(fd, suffix, sizeof(suffix) - 1);
-    koltp_full_write(fd, "\n", 1);
+    /* With --log-dir the file is the one full copy of the record; the console
+     * drops the OTLP syntax entirely (logs_pump prints the raw line itself). */
+    if (!g_console_quiet) {
+        if (g_wrap_otel) koltp_full_write(fd, prefix, sizeof(prefix) - 1);
+        koltp_full_write(fd, s->buf ? s->buf : "", s->len);
+        if (g_wrap_otel) koltp_full_write(fd, suffix, sizeof(suffix) - 1);
+        koltp_full_write(fd, "\n", 1);
+    }
     /* Tee to --log-dir, if enabled: always the bare record, never framed. Runs
      * under the same mutex so file lines cannot interleave either. */
     filesink_write(s->buf ? s->buf : "", s->len);

@@ -87,13 +87,21 @@ const char *koltp_hostname(void);
 
 /* Thread-safe telemetry emit. fd is 1 (stdout) or 2 (stderr). Adds a newline.
  * When wrapping is enabled (the default, --format kjson) each record is framed
- * as ::{"oltp":<json>}:: ; with --format json the bare <json> is written. */
+ * as ::{"oltp":<json>}:: ; with --format json the bare <json> is written.
+ * Always tees to the --log-dir file sink (a no-op when it is disabled). With
+ * --log-dir, the console side of this write is suppressed entirely (see
+ * otel_emit_init): the file is the one full copy, and the console mirrors
+ * -r/--raw instead. */
 void otel_emit(int fd, const sb *s);
-/* Thread-safe raw line emit (never wrapped) - used to pass child output
- * through verbatim when log capture is disabled. Adds a newline. */
+/* Thread-safe raw line emit (never wrapped, never teed to the file sink) -
+ * used to pass child output through verbatim when log capture is disabled,
+ * and for the console side of logs once --log-dir owns the structured copy.
+ * Adds a newline. */
 void otel_emit_raw(int fd, const char *data, size_t len);
-/* Call once from main() before any worker thread starts. */
-void otel_emit_init(bool wrap_otel);
+/* Call once from main() before any worker thread starts. console_quiet
+ * silences otel_emit()'s console side (used when --log-dir is set, so the
+ * console shows plain output instead of duplicating the file's OTLP JSON). */
+void otel_emit_init(bool wrap_otel, bool console_quiet);
 /* write() the whole buffer, retrying short writes. */
 void koltp_full_write(int fd, const char *data, size_t len);
 
@@ -102,10 +110,12 @@ void koltp_full_write(int fd, const char *data, size_t len);
 /* Mirror every record emitted through otel_emit() into <log_dir>/log.ndjson as
  * bare OTLP JSON (never framed), one record per line. With
  * cfg->log_flush_interval_s > 0 the file is rotated every N seconds into
- * log-1.ndjson, log-2.ndjson, ... Console output is unaffected either way.
- * Call once from main() before any worker thread starts; a no-op returning true
- * when cfg->log_dir is NULL. Returns false (after printing to stderr) when the
- * directory or the first file cannot be created. */
+ * log-1.ndjson, log-2.ndjson, ... The file becomes the one full copy of the
+ * telemetry: the console instead switches to -r/--raw output (see
+ * otel_emit_init's console_quiet). Call once from main() before any worker
+ * thread starts; a no-op returning true when cfg->log_dir is NULL. Returns
+ * false (after printing to stderr) when the directory or the first file
+ * cannot be created. */
 bool filesink_open(const koltp_config *cfg);
 /* Append one record. Called from otel_emit() with its console mutex already
  * held, so this never locks (and must not be called from anywhere else). */

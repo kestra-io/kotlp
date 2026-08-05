@@ -90,9 +90,9 @@ wait "$HOLD_PID" 2>/dev/null || true
 grep -q 'resourceSpans' "$POUT" || \
     fail "trace receiver did not fall back when port $HOLD_PORT was busy"
 
-# 11. --log-dir mirrors every record into DIR/log.ndjson as *bare* NDJSON while
-#     the console keeps its framing. The directory is created if it is missing
-#     (including parents).
+# 11. --log-dir mirrors every record into DIR/log.ndjson as *bare* NDJSON, and
+#     the console drops the OTLP syntax entirely (behaves like -r/--raw). The
+#     directory is created if it is missing (including parents).
 LOGDIR="$TMP/nested/logs"
 LOUT="$TMP/logdir-console.ndjson"
 "$BIN" -s smoke-logdir -i 200 --log-dir "$LOGDIR" -- \
@@ -105,9 +105,10 @@ grep -q 'resourceMetrics' "$NDJSON" || fail "--log-dir: missing resourceMetrics"
 grep -q 'resourceSpans' "$NDJSON"   || fail "--log-dir: missing resourceSpans"
 # the file is always bare, even though this run used the default -f kjson...
 if grep -q '::{"oltp":' "$NDJSON"; then fail "--log-dir output must not be framed"; fi
-# ...and the console output is unchanged (file output is additive, not a redirect)
-grep -q '::{"oltp":' "$LOUT" || fail "--log-dir must not silence the console"
-grep -q '"to-file"' "$LOUT"  || fail "--log-dir must not silence the console logs"
+# ...while the console shows the raw child line only, no OTLP JSON at all
+if grep -q '::{"oltp":' "$LOUT"; then fail "--log-dir console must not be framed"; fi
+if grep -q 'resourceLogs' "$LOUT"; then fail "--log-dir console must not carry OTLP JSON"; fi
+grep -q '^to-file$' "$LOUT" || fail "--log-dir must still print the child's raw output"
 # without --log-flush-interval there is no rotation and no file count reported
 if grep -q 'koltp.log.file.count' "$NDJSON"; then
     fail "koltp.log.file.count must only appear with --log-flush-interval"
