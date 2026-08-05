@@ -102,7 +102,10 @@ single binary + SHA-256 to a GitHub Release.
   `process.open_file_descriptor.count`, `log.iostream`, `process.exit.code`.
   Attributes with no semantic convention behind them get a `koltp.` prefix
   (e.g. `koltp.log.file.count`) so they are clearly ours.
-- Bump `KOLTP_VERSION` in `include/koltp.h` when cutting a release tag.
+- `KOLTP_VERSION` is not hand-maintained: the Makefile derives it from `git
+  describe` for local builds, and the release workflow builds with
+  `VERSION=<tag>` so the released binary's `--version` matches the git tag
+  exactly. Don't reintroduce a hardcoded version in `include/koltp.h`.
 
 ## Things to be careful about
 

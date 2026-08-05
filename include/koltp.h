@@ -22,7 +22,9 @@
 #include <sys/types.h>
 #include <sys/resource.h>
 
-#define KOLTP_VERSION "0.1.0"
+#ifndef KOLTP_VERSION
+#define KOLTP_VERSION "dev"
+#endif
 #define KOLTP_SCOPE_NAME "koltp"
 
 /* ------------------------------------------------------------------ config */

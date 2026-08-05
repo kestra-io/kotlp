@@ -29,7 +29,12 @@ COSMOCC := $(abspath $(COSMOCC_DIR))/bin/cosmocc
 TOOLCHAIN_DEP := $(COSMOCC_DIR)/bin/cosmocc
 endif
 
-CFLAGS  := -O2 -g -std=c11 -D_GNU_SOURCE -Wall -Wextra -Iinclude -pthread
+# Release builds pass VERSION=<tag> (see .github/workflows/release.yml) so the
+# binary reports exactly the git tag it was released under. Local/dev builds
+# fall back to `git describe`, or "dev" outside a git checkout.
+VERSION := $(shell git describe --tags --dirty --always 2>/dev/null || echo dev)
+
+CFLAGS  := -O2 -g -std=c11 -D_GNU_SOURCE -DKOLTP_VERSION=\"$(VERSION)\" -Wall -Wextra -Iinclude -pthread
 LDFLAGS := -pthread
 
 .PHONY: all clean distclean toolchain test test-unit check run install help

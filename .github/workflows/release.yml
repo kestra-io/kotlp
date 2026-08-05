@@ -21,7 +21,7 @@ jobs:
           key: cosmocc-${{ hashFiles('Makefile') }}
 
       - name: Build
-        run: make
+        run: make VERSION=${GITHUB_REF_NAME#v}
 
       - name: Unit tests
         run: make test-unit
