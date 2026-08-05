@@ -7,3 +7,5 @@
 *.aarch64.elf
 .DS_Store
 *.swp
+/.idea/
+/.vscode/

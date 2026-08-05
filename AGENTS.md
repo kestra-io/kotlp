@@ -16,11 +16,15 @@ span) and **metrics** (process resource sampling). Output is NDJSON.
 1. **Portability first.** Every line must compile and behave correctly under
    `cosmocc` on all target OSes. Prefer POSIX APIs that Cosmopolitan
    polyfills (`fork`, `execvp`, `pipe`, `poll`, `pthread`, BSD sockets,
-   `wait4`, `getrusage`, `clock_gettime`, `getrandom`). Do **not** assume a
-   specific OS at runtime.
-2. **Guard OS-specific code.** Anything that reads `/proc` or otherwise depends
-   on the host OS must sit behind `#ifdef __linux__` (or equivalent) with a
-   portable fallback. See `src/metrics.c` for the pattern.
+   `wait4`, `getrusage`, `clock_gettime`, `getrandom`). Never assume a specific
+   host OS — detect it (see rule 2).
+2. **Detect the OS at RUNTIME, not at compile time.** One APE binary runs on
+   every target, so `#ifdef __linux__` is *false* under `cosmocc` and would
+   compile the Linux path out entirely. Anything that reads `/proc` or otherwise
+   depends on the host OS must branch on a runtime predicate and keep a portable
+   fallback. See `KOLTP_IS_LINUX()` in `src/metrics.c` for the pattern: `IsLinux()`
+   from `<cosmo.h>` under `__COSMOPOLITAN__`, with `#ifdef __linux__` used only as
+   the fallback for a native (non-APE) build.
 3. **No external dependencies.** The binary must stay self-contained — no
    linking against system libraries beyond what `cosmocc` provides. No vendored
    third-party C either, unless it is also APE-clean.
@@ -105,8 +109,12 @@ single binary + SHA-256 to a GitHub Release.
 - **Cosmopolitan quirks:** a few libc corners differ from glibc. If something
   behaves oddly, check the [Cosmopolitan docs](https://github.com/jart/cosmopolitan)
   before assuming a bug here.
-- **The trace receiver does not decode gzip or protobuf** — only OTLP/HTTP+JSON.
-  The child env is set to `http/json` + `compression=none` to match.
+- **The trace receiver speaks OTLP over HTTP only — no gRPC — and does not
+  decode gzip.** It accepts both HTTP encodings on the same port: `http/json`
+  bodies are forwarded verbatim, `http/protobuf` bodies are decoded to the same
+  OTLP/JSON shape by `src/otlp_pb.c` (a minimal, dependency-free wire reader).
+  The child env forces `compression=none` to match, and defaults to `http/json`
+  unless `-P/--protocol` says otherwise.
 - **Live metrics are Linux-only** (via `/proc`); other OSes get the `rusage`
   summary at exit. Preserve that fallback when editing `src/metrics.c`.
 - The metrics sampler and trace receiver are background `pthread`s tied to the
