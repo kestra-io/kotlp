@@ -206,4 +206,54 @@ else
     echo "smoke_test: no /proc on this platform, skipping the fd inheritance check"
 fi
 
+# 15. process.cpu.time is declared CUMULATIVE + isMonotonic, so it must never
+#     decrease. The wrapped command keeps forking children that burn CPU and
+#     exit, which is exactly what used to make the "currently alive" sum drop.
+#     Every dip a collector sees here is read as a counter reset.
+#     Live sampling needs /proc, so on a platform without it there is only the
+#     single closing rusage record and no series to check.
+if [ ! -d /proc/self ]; then
+    echo "smoke_test: no /proc on this platform, skipping the metrics series checks"
+else
+MONODIR="$TMP/mono"
+"$BIN" -s smoke-mono -i 150 --no-traces --log-dir "$MONODIR" -- \
+    sh -c 'for i in 1 2 3 4 5 6; do
+             (i=0; while [ $i -lt 300000 ]; do i=$((i+1)); done)
+           done' >/dev/null 2>&1
+MONOFILE="$MONODIR/log.ndjson"
+[ -f "$MONOFILE" ] || fail "monotonicity check: no $MONOFILE"
+grep -q '"isMonotonic":true' "$MONOFILE" || fail "process.cpu.time lost its isMonotonic flag"
+# Pull the cpu.mode=user datapoint out of each process.cpu.time sum, in order.
+# Split each record on the metric boundary and keep only the process.cpu.time
+# objects: process.cpu.utilization also carries a cpu.mode=user asDouble, and
+# matching on that alone would interleave two unrelated series.
+awk '{
+    n = split($0, p, "\\{\"name\":")
+    for (i = 2; i <= n; i++)
+        if (p[i] ~ /^"process\.cpu\.time"/ && p[i] ~ /"stringValue":"user"/ &&
+            match(p[i], /"asDouble":[0-9.]+/))
+            print substr(p[i], RSTART + 11, RLENGTH - 11)
+}' "$MONOFILE" > "$TMP/cpu-series"
+SAMPLES="$(wc -l < "$TMP/cpu-series" | tr -d ' ')"
+# /proc exists, so live sampling must have produced a real series; too few
+# samples means something regressed, not that the platform cannot do it.
+[ "$SAMPLES" -ge 3 ] || \
+    fail "expected >= 3 process.cpu.time samples on a /proc host, got $SAMPLES"
+DROPS="$(awk 'NR>1 && $1 < prev { n++ } { prev=$1 } END { print n+0 }' "$TMP/cpu-series")"
+[ "$DROPS" -eq 0 ] || \
+    fail "process.cpu.time decreased $DROPS time(s) across $SAMPLES samples: $(tr '\n' ' ' < "$TMP/cpu-series")"
+
+# 16. every cumulative datapoint shares one startTimeUnixNano - the start of the
+#     run - so the final rusage record describes the whole execution instead of
+#     the zero-length window it used to claim by stamping "now" as its start.
+STARTS="$(grep -o '"startTimeUnixNano":"[0-9]*"' "$MONOFILE" | sort -u | wc -l | tr -d ' ')"
+[ "$STARTS" -eq 1 ] || fail "expected one startTimeUnixNano across all sums, got $STARTS"
+LASTREC="$(grep 'resourceMetrics' "$MONOFILE" | tail -1)"
+W_START="$(echo "$LASTREC" | grep -o '"startTimeUnixNano":"[0-9]*"' | head -1 | sed 's/[^0-9]//g')"
+W_END="$(echo "$LASTREC" | grep -o '"timeUnixNano":"[0-9]*"' | head -1 | sed 's/[^0-9]//g')"
+[ -n "$W_START" ] && [ -n "$W_END" ] || fail "final metrics record has no collection window"
+[ "$W_END" -gt "$W_START" ] || \
+    fail "final metrics window is not positive (start=$W_START end=$W_END)"
+fi
+
 echo "smoke_test: PASS"

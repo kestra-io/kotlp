@@ -167,12 +167,13 @@ void logs_pump(const kotlp_config *cfg, pid_t child_pid, int out_fd, int err_fd)
 
 /* Selected fields parsed from a /proc/<pid>/stat line (raw units). */
 typedef struct {
-    long ppid;             /* field 4                                  */
-    long long utime_ticks; /* field 14, in clock ticks                 */
-    long long stime_ticks; /* field 15, in clock ticks                 */
-    long long num_threads; /* field 20                                 */
-    long long vsize_bytes; /* field 23, bytes                          */
-    long long rss_pages;   /* field 24, in pages                       */
+    long ppid;                 /* field 4                                  */
+    long long utime_ticks;     /* field 14, in clock ticks                 */
+    long long stime_ticks;     /* field 15, in clock ticks                 */
+    long long num_threads;     /* field 20                                 */
+    long long starttime_ticks; /* field 22, ticks since boot               */
+    long long vsize_bytes;     /* field 23, bytes                          */
+    long long rss_pages;       /* field 24, in pages                       */
 } kotlp_proc_stat;
 
 /* Parse one /proc/<pid>/stat line. Handles a comm containing spaces/parens.
@@ -188,12 +189,81 @@ void kotlp_mark_descendants(const pid_t *pid, const pid_t *ppid, int n,
  * wall-seconds times the CPU count. Returns 0 for non-positive inputs. */
 double kotlp_cpu_utilization(double cpu_delta_s, double wall_delta_s, int ncpu);
 
-/* metrics: background sampler. Started/stopped around the child lifetime.    */
+/* One member of the wrapped process tree, as seen in a single sample, carrying
+ * that process's own cumulative counters. */
+typedef struct {
+    pid_t pid;
+    long long starttime_ticks; /* /proc/<pid>/stat field 22: with the pid, a
+                                * stable identity. A recycled pid restarts its
+                                * counters near zero, and without this we would
+                                * mistake that for the same process going
+                                * backwards.                                  */
+    double cpu_user;           /* seconds, cumulative for this process        */
+    double cpu_sys;
+    long long read_bytes;      /* bytes, cumulative for this process          */
+    long long write_bytes;
+} kotlp_tree_member;
+
+/* Fold the members of `prev` that are absent from `cur` - i.e. the processes
+ * that exited between the two samples - into the running retired totals.
+ *
+ * process.cpu.time and process.disk.io are reported as CUMULATIVE and
+ * monotonic, but /proc only knows about processes that are still alive, so a
+ * plain sum over the live tree drops a process's whole contribution the moment
+ * it exits. Carrying the last-known value of everything that has left keeps the
+ * emitted total non-decreasing while still tracking the live tree. Membership
+ * is matched on pid AND starttime, so a recycled pid retires the old entry
+ * rather than being mistaken for it.
+ *
+ * Retirement is one-way: a member banked here is never un-banked. If a process
+ * is retired by mistake - the host-wide scan hit its process cap, or a
+ * mid-tree /proc/<pid>/stat read failed and briefly orphaned a subtree - and
+ * then reappears, its contribution is counted twice. That inflates the counter,
+ * which is the safe direction to be wrong in: the series stays monotonic.
+ *
+ * Pure; exposed for unit testing. */
+void kotlp_retire_exited(const kotlp_tree_member *prev, int prev_n,
+                         const kotlp_tree_member *cur, int cur_n,
+                         double *ret_cpu_user, double *ret_cpu_sys,
+                         long long *ret_read, long long *ret_write);
+
+/* The four counters kotlp publishes as CUMULATIVE monotonic sums. */
+typedef struct {
+    double cpu_user;
+    double cpu_sys;
+    long long read_bytes;
+    long long write_bytes;
+} kotlp_counters;
+
+/* Combine one sample's live sums with everything already retired, then hold the
+ * result at or above `floor` - the values last published.
+ *
+ * The floor is a backstop, not the mechanism. Retirement alone already makes
+ * the series non-decreasing: per-process /proc counters are monotonic, so
+ * surviving members never shrink, newcomers only add, and members that leave
+ * are carried at their last-seen value. The floor exists so that "monotonic"
+ * holds structurally even in a case we did not anticipate.
+ *
+ * Pure; exposed for unit testing. */
+kotlp_counters kotlp_cumulative(kotlp_counters live, kotlp_counters retired,
+                                kotlp_counters floor);
+
+/* metrics: background sampler. Started/stopped around the child lifetime.
+ * `start_ns` is the moment the run began, and becomes the startTimeUnixNano of
+ * every cumulative datapoint - live and final - so they all describe the same
+ * collection window. Pass main()'s single value, not a fresh clock reading. */
 typedef struct metrics_sampler metrics_sampler;
-metrics_sampler *metrics_start(const kotlp_config *cfg, pid_t child_pid);
+metrics_sampler *metrics_start(const kotlp_config *cfg, pid_t child_pid,
+                               uint64_t start_ns);
 void metrics_stop(metrics_sampler *m);
-/* Emit a final, authoritative usage record from wait4() rusage data.         */
+/* Emit a final, authoritative usage record from wait4() rusage data.
+ * `m` is the (already stopped) sampler, or NULL when live sampling never ran;
+ * its last emitted totals floor the cumulative counters so the final record
+ * cannot itself be a decrease - rusage is a different accounting (reaped
+ * descendants only, and block IO rather than bytes) and can read lower than
+ * the /proc-derived samples it follows. */
 void metrics_emit_final(const kotlp_config *cfg, pid_t child_pid,
+                        const metrics_sampler *m, uint64_t start_ns,
                         const struct rusage *ru);
 
 /* traces: embedded OTLP/HTTP receiver. Returns NULL if disabled/failed.

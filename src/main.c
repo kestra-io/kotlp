@@ -87,7 +87,7 @@ int main(int argc, char **argv) {
     signal(SIGPIPE, SIG_IGN);
 
     metrics_sampler *metrics = NULL;
-    if (cfg.enable_metrics) metrics = metrics_start(&cfg, pid);
+    if (cfg.enable_metrics) metrics = metrics_start(&cfg, pid, start_ns);
 
     /* Drain stdout/stderr until both close (the child has finished writing). */
     logs_pump(&cfg, pid, out_fd, err_fd);
@@ -111,7 +111,7 @@ int main(int argc, char **argv) {
      * the count the root span reports matches what is on disk. */
     filesink_seal();
 
-    if (cfg.enable_metrics) metrics_emit_final(&cfg, pid, &ru);
+    if (cfg.enable_metrics) metrics_emit_final(&cfg, pid, metrics, start_ns, &ru);
     if (cfg.enable_traces)
         traces_emit_root_span(&cfg, pid, trace_id, span_id, start_ns, end_ns,
                               exit_code, term_signal);
