@@ -5,6 +5,7 @@
  * our stderr (fd 2), so the two streams stay distinguishable downstream. */
 #include "kotlp.h"
 
+#include <errno.h>
 #include <poll.h>
 #include <string.h>
 #include <unistd.h>
@@ -153,7 +154,13 @@ void logs_pump(const kotlp_config *cfg, pid_t child_pid, int out_fd, int err_fd)
         if (nf == 0) break;
 
         int r = poll(pfds, nf, -1);
-        if (r < 0) break;
+        /* A forwarded SIGINT/SIGTERM interrupts poll(), and the handlers are
+         * installed without SA_RESTART. Bailing out here would stop draining
+         * the child's pipes mid-run (golden rule 4) and strand the read ends. */
+        if (r < 0) {
+            if (errno == EINTR) continue;
+            break;
+        }
 
         for (int k = 0; k < nf; k++) {
             if (!(pfds[k].revents & (POLLIN | POLLHUP | POLLERR))) continue;

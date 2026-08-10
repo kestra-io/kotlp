@@ -1,6 +1,7 @@
 /* util.c - time, randomness and host identity helpers. */
 #include "kotlp.h"
 
+#include <fcntl.h>
 #include <stdio.h>
 #include <string.h>
 #include <time.h>
@@ -51,6 +52,12 @@ void kotlp_rand_hex(char *out, size_t n) {
         out[i * 2 + 1] = hex[raw[i] & 0xf];
     }
     out[n * 2] = '\0';
+}
+
+int kotlp_set_cloexec(int fd) {
+    int flags = fcntl(fd, F_GETFD, 0);
+    if (flags < 0) return -1;
+    return fcntl(fd, F_SETFD, flags | FD_CLOEXEC);
 }
 
 const char *kotlp_hostname(void) {

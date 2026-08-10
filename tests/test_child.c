@@ -7,6 +7,7 @@
 #include "test.h"
 
 #include <errno.h>
+#include <fcntl.h>
 #include <signal.h>
 #include <stdlib.h>
 #include <sys/wait.h>
@@ -55,7 +56,29 @@ static void test_signal_exit_codes(void) {
     CHECK(run_signal(SIGINT) == 128 + SIGINT);
 }
 
+/* kotlp_set_cloexec is what keeps the wrapped command from inheriting our log
+ * file and listening socket. The smoke test proves that end to end, but only
+ * where /proc exists - this runs everywhere, including macOS in CI. */
+static void test_set_cloexec(void) {
+    int p[2];
+    CHECK(pipe(p) == 0);
+    /* a fresh pipe is inheritable... */
+    CHECK((fcntl(p[0], F_GETFD) & FD_CLOEXEC) == 0);
+    /* ...until we mark it, which must stick and be idempotent */
+    CHECK(kotlp_set_cloexec(p[0]) == 0);
+    CHECK((fcntl(p[0], F_GETFD) & FD_CLOEXEC) != 0);
+    CHECK(kotlp_set_cloexec(p[0]) == 0);
+    CHECK((fcntl(p[0], F_GETFD) & FD_CLOEXEC) != 0);
+    /* the other end is untouched */
+    CHECK((fcntl(p[1], F_GETFD) & FD_CLOEXEC) == 0);
+    close(p[0]);
+    close(p[1]);
+    /* a bad descriptor reports failure rather than pretending to succeed */
+    CHECK(kotlp_set_cloexec(-1) == -1);
+}
+
 void test_child(void) {
     test_normal_exit_codes();
     test_signal_exit_codes();
+    test_set_cloexec();
 }

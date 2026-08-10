@@ -182,4 +182,28 @@ if grep -q '"stringValue":"\\r\\r' "$MULTIOUT"; then
     fail "a remainder of several CRs must not emit a record either"
 fi
 
+# 14. fd hygiene: everything kotlp opens for itself is close-on-exec, so the
+#     wrapped command inherits nothing but stdin/stdout/stderr. Run with BOTH a
+#     log dir and a trace receiver - the two descriptors that used to leak - and
+#     have the child report its OWN fd table rather than reading the tree-summed
+#     process.open_file_descriptor.count: the metric depends on how many
+#     processes `sh -c` forks (some shells tail-exec a single command), which
+#     would let the leak slip through on a one-process tree.
+#     Expect exactly 0, 1, 2 plus `ls`'s own directory fd (3); the leaky version
+#     also showed the log file and the listening socket.
+if [ -d /proc/self/fd ]; then
+    FDDIR="$TMP/fdlogs"
+    "$BIN" -s smoke-fds --no-metrics -p 4320 --log-dir "$FDDIR" -- \
+        sh -c 'ls -1 /proc/self/fd' >/dev/null 2>&1
+    FDFILE="$FDDIR/log.ndjson"
+    [ -f "$FDFILE" ] || fail "fd check: --log-dir produced no $FDFILE"
+    grep -q 'resourceSpans' "$FDFILE" || \
+        fail "fd check: no root span, so the trace receiver never bound a socket to leak"
+    FDS="$(grep -o '"stringValue":"[0-9]*"' "$FDFILE" | sed 's/[^0-9]//g' | sort -n | tr '\n' ' ')"
+    [ "$FDS" = "0 1 2 3 " ] || \
+        fail "child inherits kotlp descriptors: its fd table is [$FDS], want [0 1 2 3 ]"
+else
+    echo "smoke_test: no /proc on this platform, skipping the fd inheritance check"
+fi
+
 echo "smoke_test: PASS"
