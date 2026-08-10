@@ -9,6 +9,8 @@
 #include "kotlp.h"
 
 #include <arpa/inet.h>
+#include <errno.h>
+#include <fcntl.h>
 #include <netinet/in.h>
 #include <poll.h>
 #include <signal.h>
@@ -37,13 +39,63 @@ static const char *HTTP_OK =
     "Connection: close\r\n\r\n"
     "{\"partialSuccess\":{}}";
 
-static long parse_content_length(const char *headers) {
+/* Anything that is not an export attempt. The port is a well-known one (4318)
+ * that anything on the host can reach, and answering every probe with a 200
+ * made kotlp look like a general-purpose OTLP endpoint. */
+static const char *HTTP_405 =
+    "HTTP/1.1 405 Method Not Allowed\r\n"
+    "Allow: POST\r\n"
+    "Content-Length: 0\r\n"
+    "Connection: close\r\n\r\n";
+
+static const char *HTTP_400 =
+    "HTTP/1.1 400 Bad Request\r\n"
+    "Content-Length: 0\r\n"
+    "Connection: close\r\n\r\n";
+
+enum {
+    /* One poll() wait. Short enough that the stop flag is noticed promptly. */
+    RECV_POLL_MS = 100,
+    /* How long a connection may go without delivering a byte. This is what
+     * bounds a peer that connects and then stalls - which used to wedge the
+     * receiver thread, and traces_stop() joins that thread, so kotlp would
+     * never exit and never emit its root span with the child already reaped. */
+    IDLE_TIMEOUT_MS = 5000,
+    /* Absolute cap, so a peer that dribbles one byte per tick cannot hold the
+     * connection open forever while always looking like it is progressing. */
+    REQUEST_TIMEOUT_MS = 60000,
+    /* Budget once shutdown has begun. Bounds how long traces_stop() can block
+     * while still giving an in-flight final export from the child's SDK a
+     * chance to land. */
+    STOP_GRACE_MS = 500,
+    /* Refuse to buffer an unbounded request body. */
+    MAX_REQUEST_BYTES = 64 * 1024 * 1024,
+};
+
+/* Parse Content-Length from the request headers. `header_len` bounds the scan
+ * so a "content-length:" sequence inside the body can never be picked up.
+ * Returns -1 when absent, and -2 when present but unusable (negative, not a
+ * number, or larger than we are willing to buffer).
+ *
+ * The upper bound is load-bearing, not defensive: the value feeds
+ * `body_start + content_length`, and a header of LONG_MAX overflowed that
+ * signed addition into a negative number. The "have we got the whole body yet"
+ * guard then passed on a few bytes of payload and the forwarding loop walked
+ * content_length bytes off the end of the heap. Any local process could kill
+ * kotlp mid-run with one netcat line - measured: SIGBUS, no root span. */
+static long parse_content_length(const char *headers, size_t header_len) {
     const char *p = headers;
-    while (*p) {
+    const char *limit = headers + header_len;
+    while (p < limit) {
         if (strncasecmp(p, "content-length:", 15) == 0) {
-            return strtol(p + 15, NULL, 10);
+            errno = 0;
+            char *end = NULL;
+            long v = strtol(p + 15, &end, 10);
+            if (end == p + 15 || errno == ERANGE) return -2;
+            if (v < 0 || v > MAX_REQUEST_BYTES) return -2;
+            return v;
         }
-        const char *nl = strchr(p, '\n');
+        const char *nl = memchr(p, '\n', (size_t)(limit - p));
         if (!nl) break;
         p = nl + 1;
     }
@@ -81,33 +133,103 @@ static bool body_is_protobuf(const char *headers, size_t header_len) {
 }
 
 static void handle_conn(trace_receiver *t, int fd) {
-    (void)t;
     sb req;
     sb_init(&req);
     char buf[8192];
     long header_end = -1;
     long content_length = -1;
     long body_start = 0;
+    uint64_t began = kotlp_now_mono_ms();
+    uint64_t last_progress = began;
+    uint64_t stop_seen = 0;
+    bool timed_out = false;
+    bool capped = false;
+    bool bad_method = false;
+    bool bad_length = false;
 
-    /* Read until we have the full headers plus the declared body. */
+    /* Read until we have the full headers plus the declared body, or until a
+     * deadline passes. Every wait is bounded: the receiver is a single thread
+     * that traces_stop() joins, so a peer that connects and then stalls must
+     * not be able to hold it.
+     *
+     * The budget is an IDLE timeout rather than a total one, under a generous
+     * absolute cap. A total budget would truncate a legitimate slow transfer -
+     * notably any client sending `Expect: 100-continue`, which waits about a
+     * second for a response we never send before starting the body. */
     for (;;) {
+        uint64_t now = kotlp_now_mono_ms();
+        if (t->stop && stop_seen == 0) stop_seen = now;
+        if (now - last_progress >= IDLE_TIMEOUT_MS ||
+            now - began >= REQUEST_TIMEOUT_MS ||
+            /* Measured from when shutdown was first observed, not from when the
+             * connection opened, so a request already older than the grace
+             * still gets its full grace to finish. */
+            (stop_seen != 0 && now - stop_seen >= STOP_GRACE_MS)) {
+            timed_out = true;
+            break;
+        }
+
+        struct pollfd pfd = {fd, POLLIN, 0};
+        int r = poll(&pfd, 1, RECV_POLL_MS);
+        if (r < 0) {
+            if (errno == EINTR) continue;
+            break;
+        }
+        if (r == 0) continue; /* nothing yet - re-check the deadlines */
+        if (pfd.revents & POLLNVAL) break;
+        if (!(pfd.revents & (POLLIN | POLLHUP | POLLERR))) continue;
+
         ssize_t got = read(fd, buf, sizeof(buf));
-        if (got <= 0) break;
+        if (got < 0) {
+            if (errno == EINTR) continue;
+            /* The listener is non-blocking and macOS/BSD hand that down to the
+             * accepted socket, so a readable-then-empty socket reports EAGAIN
+             * there where Linux would simply block. Not an error. */
+            if (errno == EAGAIN || errno == EWOULDBLOCK) continue;
+            break;
+        }
+        if (got == 0) break; /* peer closed */
         for (ssize_t i = 0; i < got; i++) sb_putc(&req, buf[i]);
+        last_progress = kotlp_now_mono_ms();
 
         if (header_end < 0) {
             char *he = strstr(req.buf, "\r\n\r\n");
             if (he) {
                 header_end = (long)(he - req.buf);
                 body_start = header_end + 4;
-                content_length = parse_content_length(req.buf);
+                content_length = parse_content_length(req.buf, (size_t)header_end);
+                if (content_length == -2) {
+                    bad_length = true;
+                    break;
+                }
+                /* Only exports are served. The path is deliberately not
+                 * checked: a caller may point OTEL_EXPORTER_OTLP_TRACES_ENDPOINT
+                 * at any path, and rejecting one would break a legitimate SDK. */
+                if (strncmp(req.buf, "POST ", 5) != 0) {
+                    bad_method = true;
+                    break;
+                }
             }
         }
         if (header_end >= 0) {
             long have_body = (long)req.len - body_start;
             if (content_length < 0 || have_body >= content_length) break;
         }
-        if (req.len > 64u * 1024 * 1024) break; /* safety cap */
+        if (req.len > (size_t)MAX_REQUEST_BYTES) {
+            capped = true;
+            break;
+        }
+    }
+
+    if (bad_method || bad_length) {
+        const char *reply = bad_method ? HTTP_405 : HTTP_400;
+        if (bad_length)
+            fprintf(stderr, "kotlp: trace receiver rejected a request with an "
+                            "unusable Content-Length\n");
+        ssize_t wr = write(fd, reply, strlen(reply));
+        (void)wr;
+        sb_free(&req);
+        return;
     }
 
     if (header_end >= 0 && content_length > 0 &&
@@ -131,8 +253,34 @@ static void handle_conn(trace_receiver *t, int fd) {
         }
         if (out.len > 0) otel_emit(STDOUT_FILENO, &out);
         sb_free(&out);
+    } else if (header_end >= 0) {
+        /* Headers arrived but nothing was forwarded: either the promised body
+         * never fully turned up, or there was no Content-Length to delimit one
+         * (a chunked encoding, which is not decoded here). Dropping it while
+         * answering 200 OK made a lost export indistinguishable from a
+         * delivered one. */
+        long have_body = (long)req.len - body_start;
+        if (have_body < 0) have_body = 0;
+        if (content_length > 0) {
+            fprintf(stderr,
+                    "kotlp: trace receiver dropped a truncated payload (%ld of "
+                    "%ld bytes%s)\n",
+                    have_body, content_length,
+                    timed_out ? ", timed out"
+                              : capped ? ", over the size cap" : "");
+        } else {
+            fprintf(stderr,
+                    "kotlp: trace receiver dropped a %ld-byte payload with no "
+                    "usable Content-Length\n",
+                    have_body);
+        }
     }
 
+    /* Still 200 even for a dropped payload: a non-2xx makes the SDK retry, and
+     * a body we could not read once - too slow, or too large - is one we would
+     * fail to read again. Best-effort though: on the truncated paths we leave
+     * bytes unread, so the close() below is an RST rather than a FIN and the
+     * peer may never see this response at all. */
     ssize_t wr = write(fd, HTTP_OK, strlen(HTTP_OK));
     (void)wr;
     sb_free(&req);
@@ -149,7 +297,12 @@ static void *receiver_main(void *arg) {
          * fork in child_spawn(), so setting FD_CLOEXEC as a second step would
          * leave a window in which the child inherits the connection. */
         int fd = accept4(t->listen_fd, NULL, NULL, SOCK_CLOEXEC);
-        if (fd < 0) continue;
+        if (fd < 0) continue; /* including EAGAIN: the listener is non-blocking */
+        /* The response is ~120 bytes and always fits in an empty send buffer,
+         * so this write cannot block today. Bound it anyway, so the property is
+         * enforced by the socket rather than by that arithmetic staying true. */
+        struct timeval snd = {IDLE_TIMEOUT_MS / 1000, 0};
+        setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &snd, sizeof(snd));
         handle_conn(t, fd);
         close(fd);
     }
@@ -206,6 +359,14 @@ trace_receiver *traces_start(const kotlp_config *cfg) {
         close(fd);
         return NULL;
     }
+    /* poll() reporting POLLIN does not guarantee accept4() will not block: if
+     * the queued connection is reset in between, a blocking listener waits for
+     * the next one. That is the same "thread pinned indefinitely" failure the
+     * read loop is guarding against, so take the listener out of blocking mode
+     * too. macOS and the BSDs pass O_NONBLOCK down to the accepted socket,
+     * which is why the read loop treats EAGAIN as "nothing yet". */
+    int fl = fcntl(fd, F_GETFL, 0);
+    if (fl >= 0) fcntl(fd, F_SETFL, fl | O_NONBLOCK);
 
     static trace_receiver t;
     t.listen_fd = fd;

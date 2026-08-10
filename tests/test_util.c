@@ -19,6 +19,22 @@ static void test_now_unix_nano(void) {
     CHECK(b >= a); /* non-decreasing */
 }
 
+/* The receiver measures its request deadlines with this, so it must never run
+ * backwards - a single backwards step there is an instant spurious timeout. */
+static void test_now_mono_ms(void) {
+    uint64_t a = kotlp_now_mono_ms();
+    uint64_t b = kotlp_now_mono_ms();
+    CHECK(b >= a);
+    CHECK(a > 0);
+    /* elapsed time is measurable and sane over a short busy wait */
+    uint64_t start = kotlp_now_mono_ms();
+    volatile unsigned long spin = 0;
+    while (kotlp_now_mono_ms() - start < 5) spin++;
+    uint64_t elapsed = kotlp_now_mono_ms() - start;
+    CHECK(elapsed >= 5);
+    CHECK(elapsed < 5000); /* not a wildly wrong unit */
+}
+
 static void test_rand_hex(void) {
     char id8[17];
     char id16[33];
@@ -48,6 +64,7 @@ static void test_hostname(void) {
 
 void test_util(void) {
     test_now_unix_nano();
+    test_now_mono_ms();
     test_rand_hex();
     test_hostname();
 }
