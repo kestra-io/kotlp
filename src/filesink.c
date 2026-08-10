@@ -82,7 +82,7 @@ static bool open_current(void) {
     if (n == 0 || g_dir[n - 1] != '/') sb_putc(&path, '/');
     sb_puts(&path, name);
 
-    int fd = open(path.buf, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+    int fd = open(path.buf, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0644);
     if (fd < 0) {
         fprintf(stderr, "kotlp: cannot open log file '%s': %s\n", path.buf,
                 strerror(errno));

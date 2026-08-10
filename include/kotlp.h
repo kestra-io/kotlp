@@ -83,6 +83,17 @@ uint64_t kotlp_now_unix_nano(void);
 void kotlp_rand_hex(char *out, size_t n);
 const char *kotlp_hostname(void);
 
+/* Mark `fd` close-on-exec. Every descriptor kotlp opens for itself must be
+ * marked before child_spawn(), or the wrapped command inherits it: it would
+ * then hold a writable handle on our telemetry file and on the receiver's
+ * listening socket, and each leaked fd also inflates the
+ * process.open_file_descriptor.count we report for the tree.
+ * One call site per fd, uniform across pipes, sockets and files - where the
+ * descriptor is created atomically close-on-exec instead (accept4's
+ * SOCK_CLOEXEC), prefer that, since it leaves no window in which a concurrent
+ * fork could still inherit it. Returns 0 on success, -1 on failure. */
+int kotlp_set_cloexec(int fd);
+
 /* ----------------------------------------------------------------- otel io */
 
 /* Thread-safe telemetry emit. fd is 1 (stdout) or 2 (stderr). Adds a newline.

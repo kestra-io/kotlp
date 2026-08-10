@@ -145,7 +145,10 @@ static void *receiver_main(void *arg) {
         int r = poll(&pfd, 1, 200);
         if (r <= 0) continue;
         if (!(pfd.revents & POLLIN)) continue;
-        int fd = accept(t->listen_fd, NULL, NULL);
+        /* accept4 rather than accept: this thread runs concurrently with the
+         * fork in child_spawn(), so setting FD_CLOEXEC as a second step would
+         * leave a window in which the child inherits the connection. */
+        int fd = accept4(t->listen_fd, NULL, NULL, SOCK_CLOEXEC);
         if (fd < 0) continue;
         handle_conn(t, fd);
         close(fd);
@@ -177,6 +180,10 @@ trace_receiver *traces_start(const kotlp_config *cfg) {
         fprintf(stderr, "kotlp: trace receiver socket() failed\n");
         return NULL;
     }
+    /* The child must not inherit the listening socket: it would be able to
+     * accept() our OTLP connections, and it would keep the port bound after we
+     * close it. */
+    kotlp_set_cloexec(fd);
     int yes = 1;
     setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof(yes));
 

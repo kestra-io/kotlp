@@ -6,7 +6,6 @@
 #include "kotlp.h"
 
 #include <errno.h>
-#include <fcntl.h>
 #include <stdio.h>
 #include <string.h>
 #include <sys/wait.h>
@@ -20,28 +19,36 @@ int child_exit_code(int status) {
     return 0;
 }
 
-static int set_cloexec(int fd) {
-    int flags = fcntl(fd, F_GETFD, 0);
-    if (flags < 0) return -1;
-    return fcntl(fd, F_SETFD, flags | FD_CLOEXEC);
+static void close_pair(int p[2]) {
+    if (p[0] >= 0) close(p[0]);
+    if (p[1] >= 0) close(p[1]);
+    p[0] = p[1] = -1;
 }
 
 pid_t child_spawn(const kotlp_config *cfg, int *out_fd, int *err_fd) {
     int out_pipe[2] = {-1, -1};
     int err_pipe[2] = {-1, -1};
 
-    if (pipe(out_pipe) != 0 || pipe(err_pipe) != 0) {
+    if (pipe(out_pipe) != 0) {
         fprintf(stderr, "kotlp: pipe() failed: %s\n", strerror(errno));
+        return -1;
+    }
+    if (pipe(err_pipe) != 0) {
+        /* The first pair is already open; hand it back before bailing out. */
+        fprintf(stderr, "kotlp: pipe() failed: %s\n", strerror(errno));
+        close_pair(out_pipe);
         return -1;
     }
 
     /* Read ends stay in the parent and must not leak into the child. */
-    set_cloexec(out_pipe[0]);
-    set_cloexec(err_pipe[0]);
+    kotlp_set_cloexec(out_pipe[0]);
+    kotlp_set_cloexec(err_pipe[0]);
 
     pid_t pid = fork();
     if (pid < 0) {
         fprintf(stderr, "kotlp: fork() failed: %s\n", strerror(errno));
+        close_pair(out_pipe);
+        close_pair(err_pipe);
         return -1;
     }
 
