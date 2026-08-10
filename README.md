@@ -234,6 +234,18 @@ the child **and all of its descendants**, and emits:
 `process.cpu.utilization` is the CPU-seconds consumed over the interval divided
 by the elapsed wall time and the CPU count, so it ranges 0–1 across the machine.
 
+The two **sums** (`process.cpu.time`, `process.disk.io`) are cumulative and
+monotonic: they cover the whole tree over the whole run, not just the processes
+alive at the moment of the sample. Because `/proc` forgets a process the instant
+it exits, `kotlp` carries each sample's members forward and banks the totals of
+whatever has since disappeared — otherwise every finished child would make the
+counter drop, which a collector reads as a counter reset. Two accuracy limits
+follow: a process is frozen at its last sampled value, so work it did between
+that sample and its exit is not counted, and a child that both starts and
+finishes between two samples is never seen at all. Lowering `-i` narrows both
+gaps; the closing `rusage` record covers the second one for CPU, since it
+accounts for every reaped descendant.
+
 On the other platforms `kotlp` still emits an authoritative usage summary from
 `wait4()`/`getrusage()` when the child exits (CPU time, peak RSS, block IO).
 

@@ -15,6 +15,16 @@
  *   process.disk.io                      sum   By  disk.io.direction=read|write
  *   process.thread.count                 gauge {thread}
  *   process.open_file_descriptor.count   gauge {count}
+ *
+ * The two sums are CUMULATIVE and monotonic, so they cover the whole tree over
+ * the whole run - not just whoever is alive right now. /proc forgets a process
+ * the instant it exits, so each sample's members are carried over to the next
+ * one and whatever has disappeared is banked into a running total
+ * (kotlp_retire_exited + kotlp_cumulative). Two accuracy caveats follow from
+ * that: a member is frozen at its last sampled value, so CPU it burned between
+ * the final sample and its exit is lost, and a child that both forked and
+ * exited between two samples is never seen at all. The closing rusage record
+ * recovers some of the latter, since it accounts for every reaped descendant.
  */
 #include "kotlp.h"
 
@@ -39,6 +49,10 @@
 #define KOTLP_IS_LINUX() 0
 #endif
 
+/* Upper bound on processes examined per sample. The tree is a subset of the
+ * host's processes, so one bound serves both. */
+enum { MAX_PROCS = 8192 };
+
 struct metrics_sampler {
     pthread_t thread;
     const kotlp_config *cfg;
@@ -50,6 +64,27 @@ struct metrics_sampler {
     double prev_cpu_user;
     double prev_cpu_sys;
     uint64_t prev_ns;
+    /* Tree membership carried between samples so the cumulative counters can
+     * survive a process exiting: `incoming` is the sample just taken, `members`
+     * the one before it, and `retired_*` accumulates everything that has left
+     * the tree. See kotlp_retire_exited. */
+    kotlp_tree_member incoming[MAX_PROCS];
+    int incoming_n;
+    kotlp_tree_member members[MAX_PROCS];
+    int member_n;
+    double retired_cpu_user;
+    double retired_cpu_sys;
+    long long retired_read;
+    long long retired_write;
+    /* Last cumulative values published, so the final rusage record can be
+     * reconciled against them and never read as a counter reset. Updated by
+     * accumulate(), which sampler_main calls immediately before emit_sample();
+     * do not introduce a path that accumulates without emitting. */
+    bool have_samples; /* false when live sampling never produced a record */
+    double last_cpu_user;
+    double last_cpu_sys;
+    long long last_read;
+    long long last_write;
     volatile sig_atomic_t stop;
     bool started;
 };
@@ -100,9 +135,47 @@ bool kotlp_parse_proc_stat(const char *line, kotlp_proc_stat *out) {
     out->utime_ticks = f[11];        /* field 14 */
     out->stime_ticks = f[12];        /* field 15 */
     out->num_threads = f[17];        /* field 20 */
+    out->starttime_ticks = f[19];    /* field 22 */
     out->vsize_bytes = f[20];        /* field 23 */
     out->rss_pages = f[21];          /* field 24 */
     return true;
+}
+
+void kotlp_retire_exited(const kotlp_tree_member *prev, int prev_n,
+                         const kotlp_tree_member *cur, int cur_n,
+                         double *ret_cpu_user, double *ret_cpu_sys,
+                         long long *ret_read, long long *ret_write) {
+    for (int i = 0; i < prev_n; i++) {
+        bool still_alive = false;
+        for (int j = 0; j < cur_n; j++) {
+            if (prev[i].pid == cur[j].pid &&
+                prev[i].starttime_ticks == cur[j].starttime_ticks) {
+                still_alive = true;
+                break;
+            }
+        }
+        if (still_alive) continue;
+        /* Gone: its counters will never appear in a live sum again, so bank
+         * the last values we saw. */
+        *ret_cpu_user += prev[i].cpu_user;
+        *ret_cpu_sys += prev[i].cpu_sys;
+        *ret_read += prev[i].read_bytes;
+        *ret_write += prev[i].write_bytes;
+    }
+}
+
+kotlp_counters kotlp_cumulative(kotlp_counters live, kotlp_counters retired,
+                                kotlp_counters floor) {
+    kotlp_counters out;
+    out.cpu_user = live.cpu_user + retired.cpu_user;
+    out.cpu_sys = live.cpu_sys + retired.cpu_sys;
+    out.read_bytes = live.read_bytes + retired.read_bytes;
+    out.write_bytes = live.write_bytes + retired.write_bytes;
+    if (out.cpu_user < floor.cpu_user) out.cpu_user = floor.cpu_user;
+    if (out.cpu_sys < floor.cpu_sys) out.cpu_sys = floor.cpu_sys;
+    if (out.read_bytes < floor.read_bytes) out.read_bytes = floor.read_bytes;
+    if (out.write_bytes < floor.write_bytes) out.write_bytes = floor.write_bytes;
+    return out;
 }
 
 void kotlp_mark_descendants(const pid_t *pid, const pid_t *ppid, int n,
@@ -135,7 +208,13 @@ double kotlp_cpu_utilization(double cpu_delta_s, double wall_delta_s, int ncpu) 
 
 /* --- /proc collection (Linux runtime only) ------------------------------ */
 
-static void read_proc_io(pid_t pid, sample *s) {
+/* Read one process's cumulative IO counters. Adds them to the running sample
+ * and also reports them separately, so the per-process value can be carried
+ * across samples (see kotlp_retire_exited). */
+static void read_proc_io(pid_t pid, sample *s, long long *out_read,
+                         long long *out_write) {
+    *out_read = 0;
+    *out_write = 0;
     char path[64];
     snprintf(path, sizeof(path), "/proc/%d/io", (int)pid);
     FILE *f = fopen(path, "r");
@@ -144,9 +223,11 @@ static void read_proc_io(pid_t pid, sample *s) {
     while (fgets(line, sizeof(line), f)) {
         long long v;
         if (sscanf(line, "read_bytes: %lld", &v) == 1) {
+            *out_read = v;
             s->read_bytes += v;
             s->have_io = true;
         } else if (sscanf(line, "write_bytes: %lld", &v) == 1) {
+            *out_write = v;
             s->write_bytes += v;
             s->have_io = true;
         }
@@ -177,20 +258,25 @@ typedef struct {
     long long vsize;
     long long rss;
     long long threads;
+    long long starttime;
 } proc_metrics;
 
-static bool collect(pid_t root, sample *s) {
+/* Sample the tree rooted at `root`. Fills `s` with the summed live figures and,
+ * when `members` is non-NULL, writes each live member's own cumulative counters
+ * into it (up to MAX_PROCS entries) and sets *member_n. */
+static bool collect(pid_t root, sample *s, kotlp_tree_member *members,
+                    int *member_n) {
     memset(s, 0, sizeof(*s));
+    if (member_n) *member_n = 0;
     if (!KOTLP_IS_LINUX()) return false; /* /proc semantics are Linux-specific */
 
     DIR *d = opendir("/proc");
     if (!d) return false;
 
-    enum { MAX = 8192 };
-    static pid_t pids[MAX];
-    static pid_t ppids[MAX];
-    static proc_metrics pm[MAX];
-    static bool in_tree[MAX];
+    static pid_t pids[MAX_PROCS];
+    static pid_t ppids[MAX_PROCS];
+    static proc_metrics pm[MAX_PROCS];
+    static bool in_tree[MAX_PROCS];
 
     long clk = sysconf(_SC_CLK_TCK);
     long pg = sysconf(_SC_PAGESIZE);
@@ -199,7 +285,7 @@ static bool collect(pid_t root, sample *s) {
 
     int n = 0;
     struct dirent *e;
-    while ((e = readdir(d)) && n < MAX) {
+    while ((e = readdir(d)) && n < MAX_PROCS) {
         char *end;
         long pid = strtol(e->d_name, &end, 10);
         if (*end != '\0' || pid <= 0) continue; /* not a pid directory */
@@ -221,6 +307,7 @@ static bool collect(pid_t root, sample *s) {
         pm[n].vsize = ps.vsize_bytes;
         pm[n].rss = ps.rss_pages * (long long)pg;
         pm[n].threads = ps.num_threads;
+        pm[n].starttime = ps.starttime_ticks;
         n++;
     }
     closedir(d);
@@ -229,6 +316,7 @@ static bool collect(pid_t root, sample *s) {
     kotlp_mark_descendants(pids, ppids, n, root, in_tree);
 
     bool any = false;
+    int mn = 0;
     for (int i = 0; i < n; i++) {
         if (!in_tree[i]) continue;
         any = true;
@@ -237,9 +325,20 @@ static bool collect(pid_t root, sample *s) {
         s->rss_bytes += pm[i].rss;
         s->vsize_bytes += pm[i].vsize;
         s->threads += pm[i].threads;
-        read_proc_io(pids[i], s);
+        long long rd = 0, wr = 0;
+        read_proc_io(pids[i], s, &rd, &wr);
         read_proc_fds(pids[i], s);
+        if (members && mn < MAX_PROCS) {
+            members[mn].pid = pids[i];
+            members[mn].starttime_ticks = pm[i].starttime;
+            members[mn].cpu_user = pm[i].cpu_user;
+            members[mn].cpu_sys = pm[i].cpu_sys;
+            members[mn].read_bytes = rd;
+            members[mn].write_bytes = wr;
+            mn++;
+        }
     }
+    if (member_n) *member_n = mn;
     if (!any) return false;
     s->have_cpu = true;
     s->have_mem = true;
@@ -389,11 +488,47 @@ static void sleep_ms_interruptible(metrics_sampler *m, long ms) {
     }
 }
 
+/* Turn the live-only sums in `s` into the cumulative totals we publish, and
+ * record them as the floor for the next sample. See kotlp_cumulative. */
+static void accumulate(metrics_sampler *m, sample *s) {
+    kotlp_retire_exited(m->members, m->member_n, m->incoming, m->incoming_n,
+                        &m->retired_cpu_user, &m->retired_cpu_sys,
+                        &m->retired_read, &m->retired_write);
+    /* the sample just taken becomes the baseline for the next one */
+    memcpy(m->members, m->incoming,
+           sizeof(kotlp_tree_member) * (size_t)m->incoming_n);
+    m->member_n = m->incoming_n;
+
+    kotlp_counters live = {s->cpu_user_seconds, s->cpu_sys_seconds,
+                           s->read_bytes, s->write_bytes};
+    kotlp_counters retired = {m->retired_cpu_user, m->retired_cpu_sys,
+                              m->retired_read, m->retired_write};
+    kotlp_counters floor = {m->last_cpu_user, m->last_cpu_sys, m->last_read,
+                            m->last_write};
+    kotlp_counters out = kotlp_cumulative(live, retired, floor);
+
+    s->cpu_user_seconds = out.cpu_user;
+    s->cpu_sys_seconds = out.cpu_sys;
+    s->read_bytes = out.read_bytes;
+    s->write_bytes = out.write_bytes;
+    /* Decide this from the published total, not from the live read: exited
+     * members still contributed IO, and a live process whose /proc/<pid>/io
+     * stops being readable must not punch a hole in the series. */
+    if (out.read_bytes > 0 || out.write_bytes > 0) s->have_io = true;
+
+    m->last_cpu_user = out.cpu_user;
+    m->last_cpu_sys = out.cpu_sys;
+    m->last_read = out.read_bytes;
+    m->last_write = out.write_bytes;
+    m->have_samples = true;
+}
+
 static void *sampler_main(void *arg) {
     metrics_sampler *m = arg;
     while (!m->stop) {
         sample s;
-        if (collect(m->pid, &s)) {
+        if (collect(m->pid, &s, m->incoming, &m->incoming_n)) {
+            accumulate(m, &s);
             uint64_t now = kotlp_now_unix_nano();
             if (m->have_prev) {
                 double wall = (double)(now - m->prev_ns) / 1e9;
@@ -414,17 +549,29 @@ static void *sampler_main(void *arg) {
     return NULL;
 }
 
-metrics_sampler *metrics_start(const kotlp_config *cfg, pid_t child_pid) {
+metrics_sampler *metrics_start(const kotlp_config *cfg, pid_t child_pid,
+                               uint64_t start_ns) {
     static metrics_sampler m;
     m.cfg = cfg;
     m.pid = child_pid;
-    m.start_ns = kotlp_now_unix_nano();
+    m.start_ns = start_ns;
     m.ncpu = (int)sysconf(_SC_NPROCESSORS_ONLN);
     if (m.ncpu < 1) m.ncpu = 1;
     m.have_prev = false;
     m.prev_cpu_user = 0;
     m.prev_cpu_sys = 0;
     m.prev_ns = 0;
+    m.incoming_n = 0;
+    m.member_n = 0;
+    m.retired_cpu_user = 0;
+    m.retired_cpu_sys = 0;
+    m.retired_read = 0;
+    m.retired_write = 0;
+    m.have_samples = false;
+    m.last_cpu_user = 0;
+    m.last_cpu_sys = 0;
+    m.last_read = 0;
+    m.last_write = 0;
     m.stop = 0;
     m.started = false;
     if (pthread_create(&m.thread, NULL, sampler_main, &m) != 0) return NULL;
@@ -440,6 +587,7 @@ void metrics_stop(metrics_sampler *m) {
 }
 
 void metrics_emit_final(const kotlp_config *cfg, pid_t child_pid,
+                        const metrics_sampler *m, uint64_t start_ns,
                         const struct rusage *ru) {
     sample s;
     memset(&s, 0, sizeof(s));
@@ -455,6 +603,21 @@ void metrics_emit_final(const kotlp_config *cfg, pid_t child_pid,
     s.have_io = true;
     s.read_bytes = (long long)ru->ru_inblock * 512;
     s.write_bytes = (long long)ru->ru_oublock * 512;
-    uint64_t start = kotlp_now_unix_nano();
-    emit_sample(cfg, child_pid, start, &s);
+
+    if (m && m->have_samples) {
+        /* CPU is the same unit either way, and rusage additionally covers
+         * descendants that were reaped before any sample saw them, so take
+         * whichever is larger. */
+        if (s.cpu_user_seconds < m->last_cpu_user)
+            s.cpu_user_seconds = m->last_cpu_user;
+        if (s.cpu_sys_seconds < m->last_cpu_sys)
+            s.cpu_sys_seconds = m->last_cpu_sys;
+        /* IO is NOT the same unit: ru_inblock/ru_oublock count block-IO
+         * operations, while the series so far is /proc's read_bytes/write_bytes.
+         * Continuing the series is more honest than splicing in a number
+         * computed a different way, in either direction. */
+        s.read_bytes = m->last_read;
+        s.write_bytes = m->last_write;
+    }
+    emit_sample(cfg, child_pid, start_ns, &s);
 }
