@@ -20,6 +20,16 @@ uint64_t kotlp_now_unix_nano(void) {
     return (uint64_t)ts.tv_sec * 1000000000ull + (uint64_t)ts.tv_nsec;
 }
 
+uint64_t kotlp_now_mono_ms(void) {
+    struct timespec ts = {0, 0};
+#ifdef CLOCK_MONOTONIC
+    if (clock_gettime(CLOCK_MONOTONIC, &ts) == 0)
+        return (uint64_t)ts.tv_sec * 1000ull + (uint64_t)ts.tv_nsec / 1000000ull;
+#endif
+    clock_gettime(CLOCK_REALTIME, &ts);
+    return (uint64_t)ts.tv_sec * 1000ull + (uint64_t)ts.tv_nsec / 1000000ull;
+}
+
 static void fill_random(unsigned char *buf, size_t n) {
 #ifdef KOTLP_HAVE_GETRANDOM
     size_t off = 0;

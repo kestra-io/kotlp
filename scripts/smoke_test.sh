@@ -256,4 +256,125 @@ W_END="$(echo "$LASTREC" | grep -o '"timeUnixNano":"[0-9]*"' | head -1 | sed 's/
     fail "final metrics window is not positive (start=$W_START end=$W_END)"
 fi
 
+# 17. a stalled connection must not wedge the trace receiver. It is a single
+#     thread that traces_stop() joins, so a peer that connects and never
+#     finishes its request used to block kotlp's exit forever - the child was
+#     already reaped, but the root span was never emitted. Everything the
+#     receiver waits on is now bounded.
+#     Never use a fixed port here. If it were busy kotlp would silently fall
+#     back to an ephemeral one (check 10 tests exactly that), the peer below
+#     would reach something else or nothing at all, and the check would pass
+#     having tested nothing. Ask for port 0 and read back what was bound.
+receiver_port() { # $1 = stderr file of a kotlp started with -p 0 --debug
+    i=0
+    while [ "$i" -lt 30 ]; do
+        P="$(sed -n 's|.*OTEL_EXPORTER_OTLP_ENDPOINT=http://127\.0\.0\.1:||p' "$1" 2>/dev/null | head -1)"
+        [ -n "$P" ] && { echo "$P"; return 0; }
+        sleep 1
+        i=$((i + 1))
+    done
+    return 1
+}
+# Poll until the receiver answers at all, rather than guessing a warm-up. Any
+# HTTP status counts: this only establishes that the port is live, and which
+# status is correct is what the checks below actually assert.
+receiver_ready() { # $1 = port
+    i=0
+    while [ "$i" -lt 20 ]; do
+        [ "$(curl -s -o /dev/null -w '%{http_code}' --max-time 2 "http://127.0.0.1:$1/")" != "000" ] && return 0
+        sleep 1
+        i=$((i + 1))
+    done
+    return 1
+}
+
+if command -v nc >/dev/null 2>&1 && command -v curl >/dev/null 2>&1; then
+    HANGDIR="$TMP/hang"
+    HANGERR="$TMP/hang.err"
+    "$BIN" -s smoke-hang -p 0 --debug --no-metrics --log-dir "$HANGDIR" -- \
+        sh -c 'sleep 6' >/dev/null 2>"$HANGERR" &
+    HANG_PID=$!
+    HANGPORT="$(receiver_port "$HANGERR")" || fail "could not read the receiver's port"
+    receiver_ready "$HANGPORT" || fail "trace receiver never answered on port $HANGPORT"
+
+    # Connect and hold the socket open without ever sending a request. stdin
+    # comes from a fifo this script holds open, so releasing it is deterministic
+    # and leaves no background sleep behind.
+    STALLFIFO="$TMP/stall.fifo"
+    mkfifo "$STALLFIFO"
+    exec 9<>"$STALLFIFO"   # read-write, so opening never blocks on a reader
+    nc 127.0.0.1 "$HANGPORT" <"$STALLFIFO" >/dev/null 2>&1 &
+    STALL_PID=$!
+    sleep 1
+    kill -0 "$STALL_PID" 2>/dev/null || \
+        fail "the stalling peer never connected to $HANGPORT - nothing was tested"
+
+    # the child exits after 6s; kotlp must follow well inside the stop grace
+    WAITED=0
+    while kill -0 "$HANG_PID" 2>/dev/null && [ "$WAITED" -lt 20 ]; do
+        sleep 1
+        WAITED=$((WAITED + 1))
+    done
+    # Record the verdict BEFORE releasing the peer: closing the connection
+    # unblocks even a wedged read(), so a wedged kotlp would exit and the check
+    # would pass without having tested anything.
+    WEDGED=no
+    kill -0 "$HANG_PID" 2>/dev/null && WEDGED=yes
+    exec 9>&-
+    kill "$STALL_PID" 2>/dev/null || true
+    wait "$STALL_PID" 2>/dev/null || true
+    if [ "$WEDGED" = yes ]; then
+        kill -9 "$HANG_PID" 2>/dev/null || true
+        wait "$HANG_PID" 2>/dev/null || true
+        fail "a stalled connection wedged the trace receiver: kotlp still alive ${WAITED}s later"
+    fi
+    wait "$HANG_PID" 2>/dev/null || true
+    grep -q 'resourceSpans' "$HANGDIR/log.ndjson" || \
+        fail "no root span after a stalled connection (exit was not clean)"
+else
+    echo "smoke_test: no nc/curl on this platform, skipping the stalled-connection check"
+fi
+
+# 18. the receiver answers only export attempts, and refuses a Content-Length it
+#     cannot use. An absurd one used to overflow `body_start + content_length`,
+#     pass the "have we got the whole body" guard on a few bytes, and send the
+#     forwarding loop off the end of the heap - one netcat line from any local
+#     process killed kotlp mid-run (SIGBUS, no root span).
+if command -v curl >/dev/null 2>&1; then
+    PROBEERR="$TMP/probe.err"
+    "$BIN" -s smoke-probe -p 0 --debug --no-metrics --no-logs -- \
+        sh -c 'sleep 8' >/dev/null 2>"$PROBEERR" &
+    PROBE_PID=$!
+    PROBEPORT="$(receiver_port "$PROBEERR")" || fail "could not read the receiver's port"
+    receiver_ready "$PROBEPORT" || fail "trace receiver never answered on port $PROBEPORT"
+
+    GET_CODE="$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 \
+        "http://127.0.0.1:$PROBEPORT/")"
+    POST_CODE="$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 \
+        -X POST -H 'Content-Type: application/json' \
+        --data '{"resourceSpans":[]}' "http://127.0.0.1:$PROBEPORT/v1/traces")"
+    HUGE_CODE=000
+    if command -v nc >/dev/null 2>&1; then
+        printf 'POST /v1/traces HTTP/1.1\r\nContent-Length: 9223372036854775807\r\n\r\nabcdefgh' \
+            | nc 127.0.0.1 "$PROBEPORT" 2>/dev/null | head -1 > "$TMP/huge.reply" || true
+        HUGE_CODE="$(sed -n 's|HTTP/1\.1 \([0-9]*\).*|\1|p' "$TMP/huge.reply" 2>/dev/null)"
+        # whatever it answers, it must still be alive to answer at all
+        STILL="$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 \
+            "http://127.0.0.1:$PROBEPORT/")"
+    else
+        STILL=405
+    fi
+    wait "$PROBE_PID" 2>/dev/null || true
+
+    [ "$GET_CODE" = "405" ] || fail "GET / should be refused, got HTTP $GET_CODE"
+    [ "$POST_CODE" = "200" ] || fail "a real export should still be accepted, got HTTP $POST_CODE"
+    [ "$STILL" = "405" ] || \
+        fail "the receiver died on an absurd Content-Length (follow-up probe got '$STILL')"
+    if [ -n "$HUGE_CODE" ] && [ "$HUGE_CODE" = "200" ]; then
+        fail "an unusable Content-Length should not be accepted, got HTTP $HUGE_CODE"
+    fi
+else
+    echo "smoke_test: no curl on this platform, skipping the receiver method checks"
+fi
+
 echo "smoke_test: PASS"

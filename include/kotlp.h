@@ -79,6 +79,10 @@ void sb_json_strn(sb *s, const char *str, size_t n);
 /* --------------------------------------------------------------- util/time */
 
 uint64_t kotlp_now_unix_nano(void);
+/* Milliseconds from an arbitrary fixed origin, for measuring elapsed time.
+ * Distinct from kotlp_now_unix_nano(), which reads the wall clock and can jump
+ * backwards; only differences of this are meaningful. */
+uint64_t kotlp_now_mono_ms(void);
 /* fill `out` (>= n*2+1 bytes) with `n` random bytes rendered as lowercase hex */
 void kotlp_rand_hex(char *out, size_t n);
 const char *kotlp_hostname(void);
