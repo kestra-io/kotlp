@@ -3,8 +3,8 @@
  * Kept deliberately minimal so the tests stay APE-clean (no external test
  * framework). Each CHECK* macro records a result; the runner in main.c reports
  * the totals and the process exit code reflects success/failure. */
-#ifndef KOLTP_TEST_H
-#define KOLTP_TEST_H
+#ifndef KOTLP_TEST_H
+#define KOTLP_TEST_H
 
 #include <stdio.h>
 #include <string.h>
@@ -62,4 +62,4 @@ void test_otlp_pb(void);
 void test_metrics(void);
 void test_filesink(void);
 
-#endif /* KOLTP_TEST_H */
+#endif /* KOTLP_TEST_H */

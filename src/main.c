@@ -1,6 +1,6 @@
-/* main.c - koltp entry point: parse args, spawn the wrapped command, wire up the
+/* main.c - kotlp entry point: parse args, spawn the wrapped command, wire up the
  * three observability features and proxy the child's exit status. */
-#include "koltp.h"
+#include "kotlp.h"
 
 #include <errno.h>
 #include <signal.h>
@@ -19,15 +19,15 @@ static void forward_signal(int sig) {
 }
 
 /* Print every OTEL_* environment variable the child will inherit, so it is
- * clear which telemetry configuration koltp is sending. */
+ * clear which telemetry configuration kotlp is sending. */
 static void debug_dump_env(void) {
     for (char **e = environ; e && *e; e++) {
-        if (strncmp(*e, "OTEL_", 5) == 0) fprintf(stderr, "koltp: env %s\n", *e);
+        if (strncmp(*e, "OTEL_", 5) == 0) fprintf(stderr, "kotlp: env %s\n", *e);
     }
 }
 
 int main(int argc, char **argv) {
-    koltp_config cfg;
+    kotlp_config cfg;
     if (parse_args(argc, argv, &cfg) != 0) return 2;
 
     otel_emit_init(cfg.wrap_otel, cfg.log_dir != NULL);
@@ -63,10 +63,10 @@ int main(int argc, char **argv) {
 
     char trace_id[33];
     char span_id[17];
-    koltp_rand_hex(trace_id, 16);
-    koltp_rand_hex(span_id, 8);
+    kotlp_rand_hex(trace_id, 16);
+    kotlp_rand_hex(span_id, 8);
 
-    uint64_t start_ns = koltp_now_unix_nano();
+    uint64_t start_ns = kotlp_now_unix_nano();
 
     int out_fd = -1, err_fd = -1;
     pid_t pid = child_spawn(&cfg, &out_fd, &err_fd);
@@ -105,7 +105,7 @@ int main(int argc, char **argv) {
     int exit_code = child_exit_code(status);
     int term_signal = WIFSIGNALED(status) ? WTERMSIG(status) : 0;
 
-    uint64_t end_ns = koltp_now_unix_nano();
+    uint64_t end_ns = kotlp_now_unix_nano();
 
     /* Freeze rotation so these last records land in the file already open and
      * the count the root span reports matches what is on disk. */

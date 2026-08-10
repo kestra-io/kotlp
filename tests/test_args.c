@@ -1,6 +1,6 @@
 /* test_args.c - tests for command-line parsing, in particular the feature
  * toggles and the -r/--raw shorthand. */
-#include "koltp.h"
+#include "kotlp.h"
 #include "test.h"
 
 #include <stdlib.h>
@@ -12,8 +12,8 @@ static void clear_env(void) { unsetenv("OTEL_SERVICE_NAME"); }
 
 static void test_defaults(void) {
     clear_env();
-    char *argv[] = {"koltp", "echo", "hi", NULL};
-    koltp_config cfg;
+    char *argv[] = {"kotlp", "echo", "hi", NULL};
+    kotlp_config cfg;
     CHECK(parse_args(3, argv, &cfg) == 0);
     /* every feature is on by default */
     CHECK(cfg.enable_logs == true);
@@ -30,9 +30,9 @@ static void test_defaults(void) {
 
 static void test_individual_disable_flags(void) {
     clear_env();
-    char *argv[] = {"koltp", "--no-logs", "--no-metrics", "--no-traces",
+    char *argv[] = {"kotlp", "--no-logs", "--no-metrics", "--no-traces",
                     "echo", NULL};
-    koltp_config cfg;
+    kotlp_config cfg;
     CHECK(parse_args(5, argv, &cfg) == 0);
     CHECK(cfg.enable_logs == false);
     CHECK(cfg.enable_metrics == false);
@@ -43,8 +43,8 @@ static void test_individual_disable_flags(void) {
  * combination above does. */
 static void test_raw_long(void) {
     clear_env();
-    char *argv[] = {"koltp", "--raw", "echo", "hi", NULL};
-    koltp_config cfg;
+    char *argv[] = {"kotlp", "--raw", "echo", "hi", NULL};
+    kotlp_config cfg;
     CHECK(parse_args(4, argv, &cfg) == 0);
     CHECK(cfg.enable_logs == false);
     CHECK(cfg.enable_metrics == false);
@@ -57,8 +57,8 @@ static void test_raw_long(void) {
 
 static void test_raw_short(void) {
     clear_env();
-    char *argv[] = {"koltp", "-r", "echo", NULL};
-    koltp_config cfg;
+    char *argv[] = {"kotlp", "-r", "echo", NULL};
+    kotlp_config cfg;
     CHECK(parse_args(3, argv, &cfg) == 0);
     CHECK(cfg.enable_logs == false);
     CHECK(cfg.enable_metrics == false);
@@ -68,8 +68,8 @@ static void test_raw_short(void) {
 /* --raw composes with other options regardless of position. */
 static void test_raw_with_other_options(void) {
     clear_env();
-    char *argv[] = {"koltp", "-s", "svc", "-r", "--", "echo", NULL};
-    koltp_config cfg;
+    char *argv[] = {"kotlp", "-s", "svc", "-r", "--", "echo", NULL};
+    kotlp_config cfg;
     CHECK(parse_args(6, argv, &cfg) == 0);
     CHECK(cfg.enable_logs == false);
     CHECK(cfg.enable_metrics == false);
@@ -81,8 +81,8 @@ static void test_raw_with_other_options(void) {
  * enabled - it is NOT the same as --raw / --no-*. */
 static void test_debug_long(void) {
     clear_env();
-    char *argv[] = {"koltp", "--debug", "echo", "hi", NULL};
-    koltp_config cfg;
+    char *argv[] = {"kotlp", "--debug", "echo", "hi", NULL};
+    kotlp_config cfg;
     CHECK(parse_args(4, argv, &cfg) == 0);
     CHECK(cfg.debug == true);
     /* telemetry stays on so the OTEL_* env is still sent to the child */
@@ -93,8 +93,8 @@ static void test_debug_long(void) {
 
 static void test_debug_short(void) {
     clear_env();
-    char *argv[] = {"koltp", "-d", "echo", NULL};
-    koltp_config cfg;
+    char *argv[] = {"kotlp", "-d", "echo", NULL};
+    kotlp_config cfg;
     CHECK(parse_args(3, argv, &cfg) == 0);
     CHECK(cfg.debug == true);
     CHECK(cfg.enable_traces == true);
@@ -102,8 +102,8 @@ static void test_debug_short(void) {
 
 static void test_debug_default_off(void) {
     clear_env();
-    char *argv[] = {"koltp", "echo", NULL};
-    koltp_config cfg;
+    char *argv[] = {"kotlp", "echo", NULL};
+    kotlp_config cfg;
     CHECK(parse_args(2, argv, &cfg) == 0);
     CHECK(cfg.debug == false);
 }
@@ -112,16 +112,16 @@ static void test_debug_default_off(void) {
  * OTEL_* env can still override it. */
 static void test_protocol_default_unset(void) {
     clear_env();
-    char *argv[] = {"koltp", "echo", NULL};
-    koltp_config cfg;
+    char *argv[] = {"kotlp", "echo", NULL};
+    kotlp_config cfg;
     CHECK(parse_args(2, argv, &cfg) == 0);
     CHECK(cfg.otlp_protocol == NULL);
 }
 
 static void test_protocol_json(void) {
     clear_env();
-    char *argv[] = {"koltp", "--protocol", "json", "echo", NULL};
-    koltp_config cfg;
+    char *argv[] = {"kotlp", "--protocol", "json", "echo", NULL};
+    kotlp_config cfg;
     CHECK(parse_args(4, argv, &cfg) == 0);
     CHECK(cfg.otlp_protocol != NULL);
     CHECK_STR_EQ(cfg.otlp_protocol, "http/json");
@@ -130,42 +130,42 @@ static void test_protocol_json(void) {
 static void test_protocol_protobuf_aliases(void) {
     clear_env();
     /* short alias */
-    char *argv1[] = {"koltp", "-P", "protobuf", "echo", NULL};
-    koltp_config cfg;
+    char *argv1[] = {"kotlp", "-P", "protobuf", "echo", NULL};
+    kotlp_config cfg;
     CHECK(parse_args(4, argv1, &cfg) == 0);
     CHECK_STR_EQ(cfg.otlp_protocol, "http/protobuf");
     /* canonical spelling */
-    char *argv2[] = {"koltp", "--protocol", "http/protobuf", "echo", NULL};
+    char *argv2[] = {"kotlp", "--protocol", "http/protobuf", "echo", NULL};
     CHECK(parse_args(4, argv2, &cfg) == 0);
     CHECK_STR_EQ(cfg.otlp_protocol, "http/protobuf");
 }
 
 static void test_protocol_invalid(void) {
     clear_env();
-    char *argv[] = {"koltp", "--protocol", "grpc", "echo", NULL};
-    koltp_config cfg;
+    char *argv[] = {"kotlp", "--protocol", "grpc", "echo", NULL};
+    kotlp_config cfg;
     CHECK(parse_args(4, argv, &cfg) == -1);
 }
 
 static void test_protocol_missing_arg(void) {
     clear_env();
-    char *argv[] = {"koltp", "--protocol", NULL};
-    koltp_config cfg;
+    char *argv[] = {"kotlp", "--protocol", NULL};
+    kotlp_config cfg;
     CHECK(parse_args(2, argv, &cfg) == -1);
 }
 
 static void test_no_command_is_error(void) {
     clear_env();
-    char *argv[] = {"koltp", "-r", NULL};
-    koltp_config cfg;
+    char *argv[] = {"kotlp", "-r", NULL};
+    kotlp_config cfg;
     CHECK(parse_args(2, argv, &cfg) == -1);
 }
 
 /* --log-dir / --log-flush-interval: the file sink is off unless asked for. */
 static void test_log_dir_default_off(void) {
     clear_env();
-    char *argv[] = {"koltp", "echo", NULL};
-    koltp_config cfg;
+    char *argv[] = {"kotlp", "echo", NULL};
+    kotlp_config cfg;
     CHECK(parse_args(2, argv, &cfg) == 0);
     CHECK(cfg.log_dir == NULL);
     CHECK(cfg.log_flush_interval_s == 0);
@@ -173,64 +173,64 @@ static void test_log_dir_default_off(void) {
 
 static void test_log_dir(void) {
     clear_env();
-    char *argv[] = {"koltp", "--log-dir", "/tmp/koltp-logs", "echo", NULL};
-    koltp_config cfg;
+    char *argv[] = {"kotlp", "--log-dir", "/tmp/kotlp-logs", "echo", NULL};
+    kotlp_config cfg;
     CHECK(parse_args(4, argv, &cfg) == 0);
     CHECK(cfg.log_dir != NULL);
-    CHECK_STR_EQ(cfg.log_dir, "/tmp/koltp-logs");
+    CHECK_STR_EQ(cfg.log_dir, "/tmp/kotlp-logs");
     /* no rotation unless --log-flush-interval is given */
     CHECK(cfg.log_flush_interval_s == 0);
 }
 
 static void test_log_flush_interval(void) {
     clear_env();
-    char *argv[] = {"koltp", "--log-dir", "/tmp/koltp-logs",
+    char *argv[] = {"kotlp", "--log-dir", "/tmp/kotlp-logs",
                     "--log-flush-interval", "5", "echo", NULL};
-    koltp_config cfg;
+    kotlp_config cfg;
     CHECK(parse_args(6, argv, &cfg) == 0);
-    CHECK_STR_EQ(cfg.log_dir, "/tmp/koltp-logs");
+    CHECK_STR_EQ(cfg.log_dir, "/tmp/kotlp-logs");
     CHECK(cfg.log_flush_interval_s == 5);
 }
 
 /* the two options may be given in either order */
 static void test_log_flush_interval_before_dir(void) {
     clear_env();
-    char *argv[] = {"koltp", "--log-flush-interval", "2", "--log-dir",
-                    "/tmp/koltp-logs", "--", "echo", NULL};
-    koltp_config cfg;
+    char *argv[] = {"kotlp", "--log-flush-interval", "2", "--log-dir",
+                    "/tmp/kotlp-logs", "--", "echo", NULL};
+    kotlp_config cfg;
     CHECK(parse_args(7, argv, &cfg) == 0);
     CHECK(cfg.log_flush_interval_s == 2);
-    CHECK_STR_EQ(cfg.log_dir, "/tmp/koltp-logs");
+    CHECK_STR_EQ(cfg.log_dir, "/tmp/kotlp-logs");
 }
 
 /* rotating without a destination directory is a usage error */
 static void test_log_flush_interval_requires_dir(void) {
     clear_env();
-    char *argv[] = {"koltp", "--log-flush-interval", "5", "echo", NULL};
-    koltp_config cfg;
+    char *argv[] = {"kotlp", "--log-flush-interval", "5", "echo", NULL};
+    kotlp_config cfg;
     CHECK(parse_args(4, argv, &cfg) == -1);
 }
 
 static void test_log_flush_interval_invalid(void) {
     clear_env();
-    koltp_config cfg;
-    char *zero[] = {"koltp", "--log-dir", "/tmp/x", "--log-flush-interval", "0",
+    kotlp_config cfg;
+    char *zero[] = {"kotlp", "--log-dir", "/tmp/x", "--log-flush-interval", "0",
                     "echo", NULL};
     CHECK(parse_args(6, zero, &cfg) == -1);
-    char *neg[] = {"koltp", "--log-dir", "/tmp/x", "--log-flush-interval", "-3",
+    char *neg[] = {"kotlp", "--log-dir", "/tmp/x", "--log-flush-interval", "-3",
                    "echo", NULL};
     CHECK(parse_args(6, neg, &cfg) == -1);
-    char *nan[] = {"koltp", "--log-dir", "/tmp/x", "--log-flush-interval",
+    char *nan[] = {"kotlp", "--log-dir", "/tmp/x", "--log-flush-interval",
                    "soon", "echo", NULL};
     CHECK(parse_args(6, nan, &cfg) == -1);
 }
 
 static void test_log_options_missing_arg(void) {
     clear_env();
-    koltp_config cfg;
-    char *dir[] = {"koltp", "--log-dir", NULL};
+    kotlp_config cfg;
+    char *dir[] = {"kotlp", "--log-dir", NULL};
     CHECK(parse_args(2, dir, &cfg) == -1);
-    char *interval[] = {"koltp", "--log-dir", "/tmp/x", "--log-flush-interval",
+    char *interval[] = {"kotlp", "--log-dir", "/tmp/x", "--log-flush-interval",
                         NULL};
     CHECK(parse_args(4, interval, &cfg) == -1);
 }

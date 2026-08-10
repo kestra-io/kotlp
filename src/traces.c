@@ -6,7 +6,7 @@
  * are forwarded verbatim, http/protobuf bodies are decoded to the same JSON
  * shape (see otlp_pb.c). We also synthesize one root span covering the whole
  * execution. */
-#include "koltp.h"
+#include "kotlp.h"
 
 #include <arpa/inet.h>
 #include <netinet/in.h>
@@ -23,7 +23,7 @@ struct trace_receiver {
     pthread_t thread;
     int listen_fd;
     int port; /* the port actually bound (after any fallback) */
-    const koltp_config *cfg;
+    const kotlp_config *cfg;
     volatile sig_atomic_t stop;
     bool started;
 };
@@ -171,10 +171,10 @@ static int bound_port(int fd) {
     return (int)ntohs(addr.sin_port);
 }
 
-trace_receiver *traces_start(const koltp_config *cfg) {
+trace_receiver *traces_start(const kotlp_config *cfg) {
     int fd = socket(AF_INET, SOCK_STREAM, 0);
     if (fd < 0) {
-        fprintf(stderr, "koltp: trace receiver socket() failed\n");
+        fprintf(stderr, "kotlp: trace receiver socket() failed\n");
         return NULL;
     }
     int yes = 1;
@@ -185,7 +185,7 @@ trace_receiver *traces_start(const koltp_config *cfg) {
      * disables tracing. The actual port is advertised to the child later. */
     if (bind_loopback(fd, cfg->otlp_port) != 0) {
         if (cfg->otlp_port == 0 || bind_loopback(fd, 0) != 0) {
-            fprintf(stderr, "koltp: trace receiver cannot bind a loopback port\n");
+            fprintf(stderr, "kotlp: trace receiver cannot bind a loopback port\n");
             close(fd);
             return NULL;
         }
@@ -224,7 +224,7 @@ void traces_stop(trace_receiver *t) {
     t->started = false;
 }
 
-void traces_emit_root_span(const koltp_config *cfg, pid_t child_pid,
+void traces_emit_root_span(const kotlp_config *cfg, pid_t child_pid,
                            const char *trace_id_hex, const char *span_id_hex,
                            uint64_t start_ns, uint64_t end_ns, int exit_code,
                            int term_signal) {
@@ -232,8 +232,8 @@ void traces_emit_root_span(const koltp_config *cfg, pid_t child_pid,
     sb_init(&out);
     sb_puts(&out, "{\"resourceSpans\":[{");
     otel_resource(&out, cfg, child_pid);
-    sb_puts(&out, ",\"scopeSpans\":[{\"scope\":{\"name\":\"" KOLTP_SCOPE_NAME
-                  "\",\"version\":\"" KOLTP_VERSION "\"},\"spans\":[{");
+    sb_puts(&out, ",\"scopeSpans\":[{\"scope\":{\"name\":\"" KOTLP_SCOPE_NAME
+                  "\",\"version\":\"" KOTLP_VERSION "\"},\"spans\":[{");
     sb_puts(&out, "\"traceId\":");
     sb_json_str(&out, trace_id_hex);
     sb_puts(&out, ",\"spanId\":");
@@ -262,7 +262,7 @@ void traces_emit_root_span(const koltp_config *cfg, pid_t child_pid,
      * lands in the last of those files. */
     if (cfg->log_dir && cfg->log_flush_interval_s > 0) {
         sb_putc(&out, ',');
-        otel_attr_int(&out, "koltp.log.file.count", filesink_file_count());
+        otel_attr_int(&out, "kotlp.log.file.count", filesink_file_count());
     }
     sb_puts(&out, "],\"status\":{");
     if (exit_code == 0 && term_signal == 0) {

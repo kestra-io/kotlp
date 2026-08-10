@@ -2,7 +2,7 @@
  *
  * We only ever *write* JSON (NDJSON), so there is no parser here; the trace
  * receiver forwards the child's OTLP payload verbatim. */
-#include "koltp.h"
+#include "kotlp.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -16,7 +16,7 @@ static void sb_grow(sb *s, size_t extra) {
     if (!buf) {
         /* Out of memory in an observability sidecar should not take down the
          * wrapped workload silently; bail loudly instead. */
-        fprintf(stderr, "koltp: out of memory\n");
+        fprintf(stderr, "kotlp: out of memory\n");
         abort();
     }
     s->buf = buf;

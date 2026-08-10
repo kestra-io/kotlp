@@ -4,7 +4,7 @@ Guidance for AI coding agents (and humans) working in this repository.
 
 ## Project in one paragraph
 
-`koltp` is a single C program compiled with **Cosmopolitan Libc** (`cosmocc`)
+`kotlp` is a single C program compiled with **Cosmopolitan Libc** (`cosmocc`)
 into one **Actually Portable Executable** that runs on Linux, macOS, Windows
 and the BSDs across amd64/arm64. It wraps an arbitrary command and emits
 **OpenTelemetry OTLP/JSON** to the console for three features: **logs**
@@ -22,7 +22,7 @@ span) and **metrics** (process resource sampling). Output is NDJSON.
    every target, so `#ifdef __linux__` is *false* under `cosmocc` and would
    compile the Linux path out entirely. Anything that reads `/proc` or otherwise
    depends on the host OS must branch on a runtime predicate and keep a portable
-   fallback. See `KOLTP_IS_LINUX()` in `src/metrics.c` for the pattern: `IsLinux()`
+   fallback. See `KOTLP_IS_LINUX()` in `src/metrics.c` for the pattern: `IsLinux()`
    from `<cosmo.h>` under `__COSMOPOLITAN__`, with `#ifdef __linux__` used only as
    the fallback for a native (non-APE) build.
 3. **No external dependencies.** The binary must stay self-contained — no
@@ -35,7 +35,7 @@ span) and **metrics** (process resource sampling). Output is NDJSON.
    which serializes whole NDJSON lines under a mutex. Never `printf` telemetry
    directly — records would interleave between the logs/metrics/traces threads.
 6. **Output framing.** By default `otel_emit()` frames each record as
-   `::{"oltp":<json>}::` (`-f kjson`); `-f json` (`cfg.wrap_otel == false`) emits the bare
+   `::{"otlp":<json>}::` (`-f kjson`); `-f json` (`cfg.wrap_otel == false`) emits the bare
    record. Raw child passthrough (when `--no-logs` is set) goes through
    `otel_emit_raw()` and is **never** framed. Keep that distinction intact.
 7. **The file sink is the one full copy; the console falls back to raw.** With
@@ -52,7 +52,7 @@ span) and **metrics** (process resource sampling). Output is NDJSON.
 ## Build & test
 
 ```sh
-make            # build build/koltp (auto-downloads cosmocc on first run)
+make            # build build/kotlp (auto-downloads cosmocc on first run)
 make test-unit  # build + run the C unit tests (build/test-unit)
 make test       # build + scripts/smoke_test.sh
 make check      # unit tests + smoke test
@@ -83,7 +83,7 @@ single binary + SHA-256 to a GitHub Release.
 
 | File | Responsibility |
 |------|----------------|
-| `include/koltp.h` | All shared declarations and the `koltp_config` struct |
+| `include/kotlp.h` | All shared declarations and the `kotlp_config` struct |
 | `src/main.c`     | Arg parsing, orchestration, signal forwarding, exit proxy |
 | `src/child.c`    | `fork`/`execvp` with stdout/stderr piped back |
 | `src/logs.c`     | Per-line stdout/stderr → OTLP `LogRecord` (or passthrough) |
@@ -104,12 +104,12 @@ single binary + SHA-256 to a GitHub Release.
 - Keep semantic-convention names accurate: `process.cpu.time`,
   `process.memory.usage`, `process.disk.io` (+ `disk.io.direction`),
   `process.open_file_descriptor.count`, `log.iostream`, `process.exit.code`.
-  Attributes with no semantic convention behind them get a `koltp.` prefix
-  (e.g. `koltp.log.file.count`) so they are clearly ours.
-- `KOLTP_VERSION` is not hand-maintained: the Makefile derives it from `git
+  Attributes with no semantic convention behind them get a `kotlp.` prefix
+  (e.g. `kotlp.log.file.count`) so they are clearly ours.
+- `KOTLP_VERSION` is not hand-maintained: the Makefile derives it from `git
   describe` for local builds, and the release workflow builds with
   `VERSION=<tag>` so the released binary's `--version` matches the git tag
-  exactly. Don't reintroduce a hardcoded version in `include/koltp.h`.
+  exactly. Don't reintroduce a hardcoded version in `include/kotlp.h`.
 
 ## Things to be careful about
 

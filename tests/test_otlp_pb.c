@@ -3,7 +3,7 @@
  * We hand-encode protobuf payloads with a tiny builder (mirroring how an OTel
  * SDK would serialize on the wire), run them through otlp_traces_pb_to_json,
  * and assert on the resulting JSON. */
-#include "koltp.h"
+#include "kotlp.h"
 #include "test.h"
 
 #include <stdint.h>

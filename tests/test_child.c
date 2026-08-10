@@ -3,7 +3,7 @@
  * Rather than hand-build platform-specific wait status words, we fork real
  * children with known fates and feed the resulting waitpid() status through
  * child_exit_code(), so we validate exactly what the wrapper will return. */
-#include "koltp.h"
+#include "kotlp.h"
 #include "test.h"
 
 #include <errno.h>
