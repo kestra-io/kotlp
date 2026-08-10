@@ -185,7 +185,11 @@ typedef struct {
 bool kotlp_parse_proc_stat(const char *line, kotlp_proc_stat *out);
 
 /* Mark which of the `n` processes are `root` or one of its descendants.
- * pid[i]/ppid[i] describe process i; in_tree[i] (length n) is filled in. */
+ * pid[i]/ppid[i] describe process i; in_tree[i] (length n) is filled in.
+ * Parent links that loop - which a non-atomic /proc scan can produce - leave
+ * the whole cycle outside the tree.
+ * NOT REENTRANT: this keeps static scratch and is called from the metrics
+ * sampler thread only. */
 void kotlp_mark_descendants(const pid_t *pid, const pid_t *ppid, int n,
                             pid_t root, bool *in_tree);
 

@@ -178,11 +178,11 @@ kotlp_counters kotlp_cumulative(kotlp_counters live, kotlp_counters retired,
     return out;
 }
 
-void kotlp_mark_descendants(const pid_t *pid, const pid_t *ppid, int n,
-                            pid_t root, bool *in_tree) {
+/* Fixpoint marking: O(n^2) per pass, repeated until nothing changes. Retained
+ * only for process tables larger than the scratch below can index. */
+static void mark_descendants_fixpoint(const pid_t *pid, const pid_t *ppid, int n,
+                                      pid_t root, bool *in_tree) {
     for (int i = 0; i < n; i++) in_tree[i] = (pid[i] == root);
-    /* fixpoint: a process joins the tree once its parent is in it. Real process
-     * trees are shallow, so this converges in a handful of passes. */
     bool changed = true;
     while (changed) {
         changed = false;
@@ -197,6 +197,104 @@ void kotlp_mark_descendants(const pid_t *pid, const pid_t *ppid, int n,
             }
         }
     }
+}
+
+/* Scratch for the linear path. Static, like the /proc scan buffers in
+ * collect(): this runs on the sampler thread only. */
+enum { MARK_MAP_CAP = 2 * MAX_PROCS };
+/* The insertion probe below scans for an empty slot without a cap, so it
+ * terminates only because at most MAX_PROCS keys go into MARK_MAP_CAP slots.
+ * Both of these are load-bearing, not decorative. */
+_Static_assert(MARK_MAP_CAP >= 2 * MAX_PROCS, "load factor must stay <= 0.5");
+_Static_assert((MARK_MAP_CAP & (MARK_MAP_CAP - 1)) == 0,
+               "the probe mask needs a power of two");
+
+/* 0 = empty, otherwise the process table index plus one. Storing index+1 rather
+ * than the pid means there is no reserved key, so a pid of 0 is an ordinary
+ * entry instead of erasing its own slot. */
+static int s_map_idx[MARK_MAP_CAP];
+static signed char s_state[MAX_PROCS]; /* 0 unknown, 1 in, 2 out, 3 on the path */
+static int s_stack[MAX_PROCS];
+
+static unsigned map_slot(pid_t p) {
+    /* Fibonacci hashing: the useful entropy of the product is in its high bits,
+     * so fold those down before masking - masking alone would just permute the
+     * low bits of the pid. */
+    unsigned h = (unsigned)p * 2654435761u;
+    return (h ^ (h >> 16)) & (MARK_MAP_CAP - 1);
+}
+
+/* Index of `p` in the process table, or -1. */
+static int map_lookup(const pid_t *pid, pid_t p) {
+    unsigned h = map_slot(p);
+    for (unsigned probes = 0; probes < MARK_MAP_CAP; probes++) {
+        int v = s_map_idx[h];
+        if (v == 0) return -1;
+        if (pid[v - 1] == p) return v - 1;
+        h = (h + 1) & (MARK_MAP_CAP - 1);
+    }
+    return -1;
+}
+
+void kotlp_mark_descendants(const pid_t *pid, const pid_t *ppid, int n,
+                            pid_t root, bool *in_tree) {
+    if (n <= 0) return;
+    if (n > MAX_PROCS) {
+        mark_descendants_fixpoint(pid, ppid, n, root, in_tree);
+        return;
+    }
+
+    /* Index the table once, then answer each "is this a descendant of root?"
+     * by walking parent links upward until the answer is known. Every node
+     * visited on the way is memoised with that answer, so each is resolved once
+     * and the whole pass is linear rather than quadratic-per-fixpoint-pass. */
+    memset(s_map_idx, 0, sizeof(s_map_idx));
+    for (int i = 0; i < n; i++) {
+        unsigned h = map_slot(pid[i]);
+        while (s_map_idx[h] != 0 && pid[s_map_idx[h] - 1] != pid[i])
+            h = (h + 1) & (MARK_MAP_CAP - 1);
+        /* First occurrence wins. A repeated pid cannot come out of readdir on
+         * /proc, and this deliberately differs from the fixpoint fallback,
+         * which effectively lets any duplicate that is in the tree win. */
+        if (s_map_idx[h] == 0) s_map_idx[h] = i + 1;
+    }
+
+    memset(s_state, 0, sizeof(s_state));
+    for (int i = 0; i < n; i++) {
+        if (s_state[i] != 0) continue;
+        int depth = 0;
+        int cur = i;
+        signed char verdict;
+        for (;;) {
+            if (s_state[cur] == 1 || s_state[cur] == 2) {
+                verdict = s_state[cur]; /* already resolved */
+                break;
+            }
+            if (s_state[cur] == 3) {
+                /* Back onto the path we are currently walking. A /proc scan is
+                 * not an atomic snapshot, so parent links can appear to loop;
+                 * treat the whole cycle as outside the tree. */
+                verdict = 2;
+                break;
+            }
+            if (pid[cur] == root) {
+                s_state[cur] = 1;
+                verdict = 1;
+                break;
+            }
+            s_state[cur] = 3;
+            s_stack[depth++] = cur;
+            int parent = map_lookup(pid, ppid[cur]);
+            if (parent < 0) {
+                verdict = 2; /* parent is not in the table: not our tree */
+                break;
+            }
+            cur = parent;
+        }
+        while (depth > 0) s_state[s_stack[--depth]] = verdict;
+    }
+
+    for (int i = 0; i < n; i++) in_tree[i] = (s_state[i] == 1);
 }
 
 double kotlp_cpu_utilization(double cpu_delta_s, double wall_delta_s, int ncpu) {
@@ -263,7 +361,15 @@ typedef struct {
 
 /* Sample the tree rooted at `root`. Fills `s` with the summed live figures and,
  * when `members` is non-NULL, writes each live member's own cumulative counters
- * into it (up to MAX_PROCS entries) and sets *member_n. */
+ * into it (up to MAX_PROCS entries) and sets *member_n.
+ *
+ * On cost: the per-process /proc/<pid>/io and /proc/<pid>/fd reads below run
+ * only for processes already known to be in the tree, so they scale with the
+ * wrapped workload rather than with the host. What does scale with the host is
+ * the stat() + parse of every /proc/<pid>/stat in the loop above, and that is
+ * unavoidable - building the tree needs every process's ppid. Marking the tree
+ * out of that table used to be the other host-scaled cost and no longer is
+ * (see kotlp_mark_descendants). */
 static bool collect(pid_t root, sample *s, kotlp_tree_member *members,
                     int *member_n) {
     memset(s, 0, sizeof(*s));
