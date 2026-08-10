@@ -1,4 +1,4 @@
-/* koltp - Portable OBServability wrapper
+/* kotlp - Portable OBServability wrapper
  *
  * A single Actually Portable Executable (APE) that wraps an arbitrary command
  * line and emits OpenTelemetry-formatted JSON for:
@@ -11,8 +11,8 @@
  * cosmocc and runs unmodified on Linux, macOS, Windows and the BSDs across
  * amd64 and arm64.
  */
-#ifndef KOLTP_H
-#define KOLTP_H
+#ifndef KOTLP_H
+#define KOTLP_H
 
 #include <stdarg.h>
 #include <stdbool.h>
@@ -22,10 +22,10 @@
 #include <sys/types.h>
 #include <sys/resource.h>
 
-#ifndef KOLTP_VERSION
-#define KOLTP_VERSION "dev"
+#ifndef KOTLP_VERSION
+#define KOTLP_VERSION "dev"
 #endif
-#define KOLTP_SCOPE_NAME "koltp"
+#define KOTLP_SCOPE_NAME "kotlp"
 
 /* ------------------------------------------------------------------ config */
 
@@ -47,7 +47,7 @@ typedef struct {
                                * into this directory; NULL = console only     */
     long log_flush_interval_s;/* rotate the log dir file every N seconds;
                                * 0 = a single log.ndjson, no rotation         */
-} koltp_config;
+} kotlp_config;
 
 /* --------------------------------------------------------------- cli args  */
 
@@ -56,7 +56,7 @@ void usage(FILE *f);
 /* Parse argv into cfg, applying defaults. Returns 0 on success, -1 on a usage
  * error (a message is printed to stderr). Exits the process for --help and
  * --version. */
-int parse_args(int argc, char **argv, koltp_config *cfg);
+int parse_args(int argc, char **argv, kotlp_config *cfg);
 
 /* ------------------------------------------------------ dynamic string buf */
 
@@ -78,16 +78,16 @@ void sb_json_strn(sb *s, const char *str, size_t n);
 
 /* --------------------------------------------------------------- util/time */
 
-uint64_t koltp_now_unix_nano(void);
+uint64_t kotlp_now_unix_nano(void);
 /* fill `out` (>= n*2+1 bytes) with `n` random bytes rendered as lowercase hex */
-void koltp_rand_hex(char *out, size_t n);
-const char *koltp_hostname(void);
+void kotlp_rand_hex(char *out, size_t n);
+const char *kotlp_hostname(void);
 
 /* ----------------------------------------------------------------- otel io */
 
 /* Thread-safe telemetry emit. fd is 1 (stdout) or 2 (stderr). Adds a newline.
  * When wrapping is enabled (the default, --format kjson) each record is framed
- * as ::{"oltp":<json>}:: ; with --format json the bare <json> is written.
+ * as ::{"otlp":<json>}:: ; with --format json the bare <json> is written.
  * Always tees to the --log-dir file sink (a no-op when it is disabled). With
  * --log-dir, the console side of this write is suppressed entirely (see
  * otel_emit_init): the file is the one full copy, and the console mirrors
@@ -103,7 +103,7 @@ void otel_emit_raw(int fd, const char *data, size_t len);
  * console shows plain output instead of duplicating the file's OTLP JSON). */
 void otel_emit_init(bool wrap_otel, bool console_quiet);
 /* write() the whole buffer, retrying short writes. */
-void koltp_full_write(int fd, const char *data, size_t len);
+void kotlp_full_write(int fd, const char *data, size_t len);
 
 /* ---------------------------------------------------------------- file sink */
 
@@ -116,7 +116,7 @@ void koltp_full_write(int fd, const char *data, size_t len);
  * thread starts; a no-op returning true when cfg->log_dir is NULL. Returns
  * false (after printing to stderr) when the directory or the first file
  * cannot be created. */
-bool filesink_open(const koltp_config *cfg);
+bool filesink_open(const kotlp_config *cfg);
 /* Append one record. Called from otel_emit() with its console mutex already
  * held, so this never locks (and must not be called from anywhere else). */
 void filesink_write(const char *json, size_t len);
@@ -129,10 +129,10 @@ void filesink_close(void);
 
 /* Write the file name for rotation index `i` into `out`: i <= 0 yields
  * "log.ndjson", otherwise "log-<i>.ndjson". Pure; exposed for unit testing. */
-void koltp_log_file_name(char *out, size_t out_sz, int index);
+void kotlp_log_file_name(char *out, size_t out_sz, int index);
 /* mkdir -p: create `path` and any missing parents. Returns 0 on success, -1
  * with errno set otherwise. An already-existing directory is success. */
-int koltp_mkdir_p(const char *path);
+int kotlp_mkdir_p(const char *path);
 
 /* Decode an OTLP/protobuf trace payload (ExportTraceServiceRequest, which is
  * wire-compatible with TracesData) into the equivalent OTLP/JSON, appended to
@@ -141,7 +141,7 @@ int koltp_mkdir_p(const char *path);
 void otlp_traces_pb_to_json(sb *out, const uint8_t *data, size_t len);
 
 /* Append an OTLP resource object: "resource":{...} (no leading/trailing comma) */
-void otel_resource(sb *s, const koltp_config *cfg, pid_t child_pid);
+void otel_resource(sb *s, const kotlp_config *cfg, pid_t child_pid);
 /* Append one OTLP key/value attribute object: {"key":..,"value":{..}} */
 void otel_attr_str(sb *s, const char *key, const char *val);
 void otel_attr_int(sb *s, const char *key, int64_t val);
@@ -150,7 +150,7 @@ void otel_attr_int(sb *s, const char *key, int64_t val);
 
 /* logs: read both pipe fds until EOF, emitting one OTLP log record per line.
  * stdout-origin records go to fd 1, stderr-origin records go to fd 2.        */
-void logs_pump(const koltp_config *cfg, pid_t child_pid, int out_fd, int err_fd);
+void logs_pump(const kotlp_config *cfg, pid_t child_pid, int out_fd, int err_fd);
 
 /* metrics helpers (pure; exposed for unit testing) -------------------------*/
 
@@ -162,39 +162,39 @@ typedef struct {
     long long num_threads; /* field 20                                 */
     long long vsize_bytes; /* field 23, bytes                          */
     long long rss_pages;   /* field 24, in pages                       */
-} koltp_proc_stat;
+} kotlp_proc_stat;
 
 /* Parse one /proc/<pid>/stat line. Handles a comm containing spaces/parens.
  * Returns false if the line is malformed/too short. */
-bool koltp_parse_proc_stat(const char *line, koltp_proc_stat *out);
+bool kotlp_parse_proc_stat(const char *line, kotlp_proc_stat *out);
 
 /* Mark which of the `n` processes are `root` or one of its descendants.
  * pid[i]/ppid[i] describe process i; in_tree[i] (length n) is filled in. */
-void koltp_mark_descendants(const pid_t *pid, const pid_t *ppid, int n,
+void kotlp_mark_descendants(const pid_t *pid, const pid_t *ppid, int n,
                             pid_t root, bool *in_tree);
 
 /* CPU utilization in [0,1]: CPU-seconds consumed over the interval divided by
  * wall-seconds times the CPU count. Returns 0 for non-positive inputs. */
-double koltp_cpu_utilization(double cpu_delta_s, double wall_delta_s, int ncpu);
+double kotlp_cpu_utilization(double cpu_delta_s, double wall_delta_s, int ncpu);
 
 /* metrics: background sampler. Started/stopped around the child lifetime.    */
 typedef struct metrics_sampler metrics_sampler;
-metrics_sampler *metrics_start(const koltp_config *cfg, pid_t child_pid);
+metrics_sampler *metrics_start(const kotlp_config *cfg, pid_t child_pid);
 void metrics_stop(metrics_sampler *m);
 /* Emit a final, authoritative usage record from wait4() rusage data.         */
-void metrics_emit_final(const koltp_config *cfg, pid_t child_pid,
+void metrics_emit_final(const kotlp_config *cfg, pid_t child_pid,
                         const struct rusage *ru);
 
 /* traces: embedded OTLP/HTTP receiver. Returns NULL if disabled/failed.
  * Binds cfg->otlp_port on loopback, falling back to an OS-assigned ephemeral
  * port when the requested one is unavailable.                                 */
 typedef struct trace_receiver trace_receiver;
-trace_receiver *traces_start(const koltp_config *cfg);
+trace_receiver *traces_start(const kotlp_config *cfg);
 /* The port actually bound (may differ from cfg->otlp_port after fallback).    */
 int traces_port(const trace_receiver *t);
 void traces_stop(trace_receiver *t);
 /* Emit the wrapper's own root span for the whole execution.                  */
-void traces_emit_root_span(const koltp_config *cfg, pid_t child_pid,
+void traces_emit_root_span(const kotlp_config *cfg, pid_t child_pid,
                            const char *trace_id_hex, const char *span_id_hex,
                            uint64_t start_ns, uint64_t end_ns, int exit_code,
                            int term_signal);
@@ -204,11 +204,11 @@ void traces_emit_root_span(const koltp_config *cfg, pid_t child_pid,
 /* Spawn cfg->argv with stdout/stderr redirected to fresh pipes.
  * On success returns the child pid and fills *out_fd / *err_fd with the read
  * ends of the pipes. Returns -1 on failure.                                  */
-pid_t child_spawn(const koltp_config *cfg, int *out_fd, int *err_fd);
+pid_t child_spawn(const kotlp_config *cfg, int *out_fd, int *err_fd);
 
 /* Map a wait4()/waitpid() status into the exit code the wrapper should return:
  * the child's own exit status, or 128 + signal number when it was killed by a
  * signal (the convention used by POSIX shells). */
 int child_exit_code(int status);
 
-#endif /* KOLTP_H */
+#endif /* KOTLP_H */

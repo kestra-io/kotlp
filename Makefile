@@ -1,10 +1,10 @@
-# koltp - portable OpenTelemetry process wrapper
+# kotlp - portable OpenTelemetry process wrapper
 #
 # Builds a single Actually Portable Executable (APE) with the Cosmopolitan
 # toolchain. The resulting binary runs natively on Linux, macOS, Windows,
 # FreeBSD, OpenBSD and NetBSD across amd64 and arm64.
 
-NAME            := koltp
+NAME            := kotlp
 COSMOCC_VERSION := 4.0.2
 COSMOCC_DIR     := build/cosmocc
 BIN             := build/$(NAME)
@@ -34,7 +34,7 @@ endif
 # fall back to `git describe`, or "dev" outside a git checkout.
 VERSION := $(shell git describe --tags --dirty --always 2>/dev/null || echo dev)
 
-CFLAGS  := -O2 -g -std=c11 -D_GNU_SOURCE -DKOLTP_VERSION=\"$(VERSION)\" -Wall -Wextra -Iinclude -pthread
+CFLAGS  := -O2 -g -std=c11 -D_GNU_SOURCE -DKOTLP_VERSION=\"$(VERSION)\" -Wall -Wextra -Iinclude -pthread
 LDFLAGS := -pthread
 
 .PHONY: all clean distclean toolchain test test-unit check run install help
@@ -89,7 +89,10 @@ install: $(BIN)
 	install -m 0755 $(BIN) $(DESTDIR)/usr/local/bin/$(NAME)
 
 clean:
+	# cosmocc emits .aarch64.elf/.com.dbg sidecars next to each binary.
 	rm -rf build/obj $(BIN) $(TEST_BIN)
+	rm -f $(BIN).aarch64.elf $(BIN).com.dbg \
+	      $(TEST_BIN).aarch64.elf $(TEST_BIN).com.dbg
 
 distclean:
 	rm -rf build

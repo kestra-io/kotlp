@@ -1,5 +1,5 @@
 /* test_otel.c - tests for the OTLP/JSON attribute and resource builders. */
-#include "koltp.h"
+#include "kotlp.h"
 #include "test.h"
 
 #include <errno.h>
@@ -40,7 +40,7 @@ static void test_attr_int(void) {
 
 static void test_resource(void) {
     char *argv[] = {"echo", "hi", NULL};
-    koltp_config cfg;
+    kotlp_config cfg;
     memset(&cfg, 0, sizeof(cfg));
     cfg.service_name = "my-svc";
     cfg.argv = argv;
@@ -81,11 +81,11 @@ static void test_emit_framing(void) {
     sb_init(&s);
     sb_puts(&s, "{\"a\":1}");
 
-    /* default: framed as ::{"oltp":<json>}:: */
+    /* default: framed as ::{"otlp":<json>}:: */
     otel_emit_init(true, false);
     otel_emit(p[1], &s);
     read_back(p[0], buf, sizeof(buf));
-    CHECK_STR_EQ(buf, "::{\"oltp\":{\"a\":1}}::\n");
+    CHECK_STR_EQ(buf, "::{\"otlp\":{\"a\":1}}::\n");
 
     /* -f json: bare JSON, no framing */
     otel_emit_init(false, false);

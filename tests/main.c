@@ -6,7 +6,7 @@ int g_checks_failed = 0;
 const char *g_current_test = "(none)";
 
 int main(void) {
-    printf("koltp unit tests\n");
+    printf("kotlp unit tests\n");
     RUN(test_json);
     RUN(test_util);
     RUN(test_otel);

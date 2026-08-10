@@ -2,7 +2,7 @@
  *
  * Every record that goes through otel_emit() is also appended here as *bare*
  * OTLP JSON, one record per line: the file is machine-facing NDJSON, so it never
- * carries the ::{"oltp":...}:: console framing regardless of --format. Raw child
+ * carries the ::{"otlp":...}:: console framing regardless of --format. Raw child
  * passthrough (otel_emit_raw, used by --no-logs / --debug) is not JSON and is
  * therefore never written here.
  *
@@ -16,7 +16,7 @@
  * receiver), so the state is file-static. filesink_write() runs under
  * otel_emit()'s mutex and takes no lock of its own; filesink_open()/_seal()/
  * _close() are only called from main() outside the threads' lifetime. */
-#include "koltp.h"
+#include "kotlp.h"
 
 #include <errno.h>
 #include <fcntl.h>
@@ -33,7 +33,7 @@ static int g_index;              /* rotation index of the current file */
 static int g_count;              /* files created so far */
 static bool g_sealed;
 
-void koltp_log_file_name(char *out, size_t out_sz, int index) {
+void kotlp_log_file_name(char *out, size_t out_sz, int index) {
     if (!out || out_sz == 0) return;
     if (index <= 0) {
         snprintf(out, out_sz, "log.ndjson");
@@ -42,7 +42,7 @@ void koltp_log_file_name(char *out, size_t out_sz, int index) {
     }
 }
 
-int koltp_mkdir_p(const char *path) {
+int kotlp_mkdir_p(const char *path) {
     if (!path || !path[0]) {
         errno = EINVAL;
         return -1;
@@ -73,7 +73,7 @@ int koltp_mkdir_p(const char *path) {
 /* Open <g_dir>/<name for g_index>, replacing any current file. */
 static bool open_current(void) {
     char name[32];
-    koltp_log_file_name(name, sizeof(name), g_index);
+    kotlp_log_file_name(name, sizeof(name), g_index);
 
     sb path;
     sb_init(&path);
@@ -84,7 +84,7 @@ static bool open_current(void) {
 
     int fd = open(path.buf, O_WRONLY | O_CREAT | O_TRUNC, 0644);
     if (fd < 0) {
-        fprintf(stderr, "koltp: cannot open log file '%s': %s\n", path.buf,
+        fprintf(stderr, "kotlp: cannot open log file '%s': %s\n", path.buf,
                 strerror(errno));
         sb_free(&path);
         return false;
@@ -92,12 +92,12 @@ static bool open_current(void) {
     sb_free(&path);
 
     g_fd = fd;
-    g_file_start_ns = koltp_now_unix_nano();
+    g_file_start_ns = kotlp_now_unix_nano();
     g_count++;
     return true;
 }
 
-bool filesink_open(const koltp_config *cfg) {
+bool filesink_open(const kotlp_config *cfg) {
     if (!cfg->log_dir) return true; /* sink disabled */
 
     g_dir = cfg->log_dir;
@@ -106,8 +106,8 @@ bool filesink_open(const koltp_config *cfg) {
     g_count = 0;
     g_sealed = false;
 
-    if (koltp_mkdir_p(g_dir) != 0) {
-        fprintf(stderr, "koltp: cannot create log dir '%s': %s\n", g_dir,
+    if (kotlp_mkdir_p(g_dir) != 0) {
+        fprintf(stderr, "kotlp: cannot create log dir '%s': %s\n", g_dir,
                 strerror(errno));
         return false;
     }
@@ -118,7 +118,7 @@ void filesink_write(const char *json, size_t len) {
     if (g_fd < 0) return;
 
     if (!g_sealed && g_interval_s > 0) {
-        uint64_t now = koltp_now_unix_nano();
+        uint64_t now = kotlp_now_unix_nano();
         uint64_t elapsed = now > g_file_start_ns ? now - g_file_start_ns : 0;
         if (elapsed >= (uint64_t)g_interval_s * 1000000000ull) {
             close(g_fd);
@@ -130,8 +130,8 @@ void filesink_write(const char *json, size_t len) {
         }
     }
 
-    koltp_full_write(g_fd, json, len);
-    koltp_full_write(g_fd, "\n", 1);
+    kotlp_full_write(g_fd, json, len);
+    kotlp_full_write(g_fd, "\n", 1);
 }
 
 void filesink_seal(void) { g_sealed = true; }

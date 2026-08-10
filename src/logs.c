@@ -3,7 +3,7 @@
  *
  * stdout-origin lines are written to our stdout (fd 1), stderr-origin lines to
  * our stderr (fd 2), so the two streams stay distinguishable downstream. */
-#include "koltp.h"
+#include "kotlp.h"
 
 #include <poll.h>
 #include <string.h>
@@ -21,17 +21,18 @@ typedef struct {
     const char *severity_text;
     sb line;         /* accumulates a partial line across reads       */
     bool eof;
+    bool pending_cr; /* saw a CR whose LF may land in the next read    */
 } stream_state;
 
-static void emit_log_line(const koltp_config *cfg, pid_t child_pid,
+static void emit_log_line(const kotlp_config *cfg, pid_t child_pid,
                           stream_state *st, const char *data, size_t n) {
     sb out;
     sb_init(&out);
-    uint64_t now = koltp_now_unix_nano();
+    uint64_t now = kotlp_now_unix_nano();
     sb_puts(&out, "{\"resourceLogs\":[{");
     otel_resource(&out, cfg, child_pid);
-    sb_puts(&out, ",\"scopeLogs\":[{\"scope\":{\"name\":\"" KOLTP_SCOPE_NAME
-                  "\",\"version\":\"" KOLTP_VERSION "\"},\"logRecords\":[{");
+    sb_puts(&out, ",\"scopeLogs\":[{\"scope\":{\"name\":\"" KOTLP_SCOPE_NAME
+                  "\",\"version\":\"" KOTLP_VERSION "\"},\"logRecords\":[{");
     sb_putf(&out, "\"timeUnixNano\":\"%llu\",", (unsigned long long)now);
     sb_putf(&out, "\"observedTimeUnixNano\":\"%llu\",", (unsigned long long)now);
     sb_putf(&out, "\"severityNumber\":%d,", st->severity_number);
@@ -54,7 +55,7 @@ static void emit_log_line(const koltp_config *cfg, pid_t child_pid,
  * to it and otel_emit_init silenced its console side), so the console would
  * otherwise go silent for logs. Print the raw line there too, same as -r/--raw,
  * so the console still shows the wrapped command's actual output. */
-static void emit_or_passthrough(const koltp_config *cfg, pid_t child_pid,
+static void emit_or_passthrough(const kotlp_config *cfg, pid_t child_pid,
                                 stream_state *st) {
     if (cfg->enable_logs && !cfg->debug) {
         emit_log_line(cfg, child_pid, st, st->line.buf ? st->line.buf : "",
@@ -64,7 +65,8 @@ static void emit_or_passthrough(const koltp_config *cfg, pid_t child_pid,
                           st->line.len);
         }
     } else {
-        /* passthrough: emit the child's bytes verbatim, never OTel-wrapped */
+        /* passthrough: the child's own bytes, never OTel-wrapped (line endings
+         * are still normalised to LF, since otel_emit_raw appends one) */
         otel_emit_raw(st->dst_fd, st->line.buf ? st->line.buf : "",
                       st->line.len);
     }
@@ -72,29 +74,64 @@ static void emit_or_passthrough(const koltp_config *cfg, pid_t child_pid,
 }
 
 /* Split the freshly read bytes on newlines, emitting one record per line and
- * buffering any trailing partial line for the next read. */
-static void consume(const koltp_config *cfg, pid_t child_pid, stream_state *st,
+ * buffering any trailing partial line for the next read.
+ *
+ * A CR is only a line-ending artifact when an LF follows it, so just that pairing
+ * is swallowed and every other CR is kept as data (progress bars and the like
+ * use bare CRs, and dropping them silently corrupts the body). The pair can
+ * straddle a read boundary, hence the CR carried over on the stream. */
+static void consume(const kotlp_config *cfg, pid_t child_pid, stream_state *st,
                     const char *data, size_t n) {
     for (size_t i = 0; i < n; i++) {
-        if (data[i] == '\n') {
+        char c = data[i];
+        if (st->pending_cr) {
+            st->pending_cr = false;
+            if (c == '\n') {
+                emit_or_passthrough(cfg, child_pid, st); /* CRLF terminator */
+                continue;
+            }
+            sb_putc(&st->line, '\r'); /* bare CR: part of the payload */
+        }
+        if (c == '\r') {
+            st->pending_cr = true;
+        } else if (c == '\n') {
             emit_or_passthrough(cfg, child_pid, st);
-        } else if (data[i] != '\r') {
-            sb_putc(&st->line, data[i]);
+        } else {
+            sb_putc(&st->line, c);
         }
     }
 }
 
-static void flush_remainder(const koltp_config *cfg, pid_t child_pid,
+/* True when the buffered line holds nothing but carriage returns. Such a
+ * remainder is a tool clearing its progress line on the way out, so it carries
+ * no message and is dropped rather than emitted as a record of its own. */
+static bool line_is_only_crs(const sb *line) {
+    for (size_t i = 0; i < line->len; i++) {
+        if (line->buf[i] != '\r') return false;
+    }
+    return true;
+}
+
+static void flush_remainder(const kotlp_config *cfg, pid_t child_pid,
                             stream_state *st) {
-    if (st->line.len > 0) {
+    /* A CR at the very end of the stream never found its LF, so it is data. */
+    if (st->pending_cr) {
+        sb_putc(&st->line, '\r');
+        st->pending_cr = false;
+    }
+    if (st->line.len > 0 && !line_is_only_crs(&st->line)) {
         emit_or_passthrough(cfg, child_pid, st);
+    } else {
+        sb_reset(&st->line);
     }
 }
 
-void logs_pump(const koltp_config *cfg, pid_t child_pid, int out_fd, int err_fd) {
+void logs_pump(const kotlp_config *cfg, pid_t child_pid, int out_fd, int err_fd) {
     stream_state streams[2] = {
-        {out_fd, STDOUT_FILENO, "stdout", SEV_INFO, "INFO", {0}, false},
-        {err_fd, STDERR_FILENO, "stderr", SEV_ERROR, "ERROR", {0}, false},
+        {.src_fd = out_fd, .dst_fd = STDOUT_FILENO, .stream_name = "stdout",
+         .severity_number = SEV_INFO, .severity_text = "INFO"},
+        {.src_fd = err_fd, .dst_fd = STDERR_FILENO, .stream_name = "stderr",
+         .severity_number = SEV_ERROR, .severity_text = "ERROR"},
     };
     sb_init(&streams[0].line);
     sb_init(&streams[1].line);

@@ -3,7 +3,7 @@
  * fork()+exec() is used rather than posix_spawn so we keep precise control of
  * fd wiring; Cosmopolitan polyfills fork() on every supported OS (including
  * Windows), so this stays portable. */
-#include "koltp.h"
+#include "kotlp.h"
 
 #include <errno.h>
 #include <fcntl.h>
@@ -26,12 +26,12 @@ static int set_cloexec(int fd) {
     return fcntl(fd, F_SETFD, flags | FD_CLOEXEC);
 }
 
-pid_t child_spawn(const koltp_config *cfg, int *out_fd, int *err_fd) {
+pid_t child_spawn(const kotlp_config *cfg, int *out_fd, int *err_fd) {
     int out_pipe[2] = {-1, -1};
     int err_pipe[2] = {-1, -1};
 
     if (pipe(out_pipe) != 0 || pipe(err_pipe) != 0) {
-        fprintf(stderr, "koltp: pipe() failed: %s\n", strerror(errno));
+        fprintf(stderr, "kotlp: pipe() failed: %s\n", strerror(errno));
         return -1;
     }
 
@@ -41,7 +41,7 @@ pid_t child_spawn(const koltp_config *cfg, int *out_fd, int *err_fd) {
 
     pid_t pid = fork();
     if (pid < 0) {
-        fprintf(stderr, "koltp: fork() failed: %s\n", strerror(errno));
+        fprintf(stderr, "kotlp: fork() failed: %s\n", strerror(errno));
         return -1;
     }
 
@@ -55,7 +55,7 @@ pid_t child_spawn(const koltp_config *cfg, int *out_fd, int *err_fd) {
         close(err_pipe[1]);
         execvp(cfg->argv[0], cfg->argv);
         /* exec only returns on failure */
-        fprintf(stderr, "koltp: cannot execute '%s': %s\n", cfg->argv[0],
+        fprintf(stderr, "kotlp: cannot execute '%s': %s\n", cfg->argv[0],
                 strerror(errno));
         _exit(127);
     }

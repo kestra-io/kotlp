@@ -1,5 +1,5 @@
 /* test_json.c - tests for the growable string builder and JSON escaping. */
-#include "koltp.h"
+#include "kotlp.h"
 #include "test.h"
 
 static void test_sb_basics(void) {

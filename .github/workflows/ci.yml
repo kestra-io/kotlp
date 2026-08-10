@@ -33,9 +33,9 @@ jobs:
       - name: Upload artifacts
         uses: actions/upload-artifact@v7
         with:
-          name: koltp-ape
+          name: kotlp-ape
           path: |
-            build/koltp
+            build/kotlp
             build/test-unit
           if-no-files-found: error
 
@@ -56,14 +56,14 @@ jobs:
       - name: Download artifacts
         uses: actions/download-artifact@v8
         with:
-          name: koltp-ape
+          name: kotlp-ape
           path: build
 
       - name: Make executable
-        run: chmod +x build/koltp build/test-unit
+        run: chmod +x build/kotlp build/test-unit
 
       - name: Unit tests
         run: ./build/test-unit
 
       - name: Smoke test
-        run: scripts/smoke_test.sh "$(pwd)/build/koltp"
+        run: scripts/smoke_test.sh "$(pwd)/build/kotlp"

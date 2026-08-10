@@ -16,7 +16,7 @@
  *   process.thread.count                 gauge {thread}
  *   process.open_file_descriptor.count   gauge {count}
  */
-#include "koltp.h"
+#include "kotlp.h"
 
 #include <dirent.h>
 #include <pthread.h>
@@ -32,16 +32,16 @@
  * RUNTIME via IsLinux(); a native (non-APE) build falls back to the macro. */
 #ifdef __COSMOPOLITAN__
 #include <cosmo.h>
-#define KOLTP_IS_LINUX() IsLinux()
+#define KOTLP_IS_LINUX() IsLinux()
 #elif defined(__linux__)
-#define KOLTP_IS_LINUX() 1
+#define KOTLP_IS_LINUX() 1
 #else
-#define KOLTP_IS_LINUX() 0
+#define KOTLP_IS_LINUX() 0
 #endif
 
 struct metrics_sampler {
     pthread_t thread;
-    const koltp_config *cfg;
+    const kotlp_config *cfg;
     pid_t pid;
     uint64_t start_ns;
     int ncpu;
@@ -76,7 +76,7 @@ typedef struct {
 
 /* --- pure helpers (platform-independent; exercised by the unit tests) ---- */
 
-bool koltp_parse_proc_stat(const char *line, koltp_proc_stat *out) {
+bool kotlp_parse_proc_stat(const char *line, kotlp_proc_stat *out) {
     /* comm (field 2) is wrapped in parens and may itself contain spaces and
      * parens, so split on the LAST ')': everything after it is space-separated
      * and starts at field 3 (state). */
@@ -105,7 +105,7 @@ bool koltp_parse_proc_stat(const char *line, koltp_proc_stat *out) {
     return true;
 }
 
-void koltp_mark_descendants(const pid_t *pid, const pid_t *ppid, int n,
+void kotlp_mark_descendants(const pid_t *pid, const pid_t *ppid, int n,
                             pid_t root, bool *in_tree) {
     for (int i = 0; i < n; i++) in_tree[i] = (pid[i] == root);
     /* fixpoint: a process joins the tree once its parent is in it. Real process
@@ -126,7 +126,7 @@ void koltp_mark_descendants(const pid_t *pid, const pid_t *ppid, int n,
     }
 }
 
-double koltp_cpu_utilization(double cpu_delta_s, double wall_delta_s, int ncpu) {
+double kotlp_cpu_utilization(double cpu_delta_s, double wall_delta_s, int ncpu) {
     if (wall_delta_s <= 0.0 || ncpu <= 0 || cpu_delta_s <= 0.0) return 0.0;
     double u = cpu_delta_s / (wall_delta_s * (double)ncpu);
     if (u > 1.0) u = 1.0;
@@ -181,7 +181,7 @@ typedef struct {
 
 static bool collect(pid_t root, sample *s) {
     memset(s, 0, sizeof(*s));
-    if (!KOLTP_IS_LINUX()) return false; /* /proc semantics are Linux-specific */
+    if (!KOTLP_IS_LINUX()) return false; /* /proc semantics are Linux-specific */
 
     DIR *d = opendir("/proc");
     if (!d) return false;
@@ -211,8 +211,8 @@ static bool collect(pid_t root, sample *s) {
         char line[4096];
         char *got = fgets(line, sizeof(line), f);
         fclose(f);
-        koltp_proc_stat ps;
-        if (!got || !koltp_parse_proc_stat(line, &ps)) continue;
+        kotlp_proc_stat ps;
+        if (!got || !kotlp_parse_proc_stat(line, &ps)) continue;
 
         pids[n] = (pid_t)pid;
         ppids[n] = (pid_t)ps.ppid;
@@ -226,7 +226,7 @@ static bool collect(pid_t root, sample *s) {
     closedir(d);
     if (n == 0) return false;
 
-    koltp_mark_descendants(pids, ppids, n, root, in_tree);
+    kotlp_mark_descendants(pids, ppids, n, root, in_tree);
 
     bool any = false;
     for (int i = 0; i < n; i++) {
@@ -317,15 +317,15 @@ static void metric_gauge_double(sb *s, const char *name, const char *unit,
     sb_puts(s, "}]}}");
 }
 
-static void emit_sample(const koltp_config *cfg, pid_t pid, uint64_t start_ns,
+static void emit_sample(const kotlp_config *cfg, pid_t pid, uint64_t start_ns,
                         const sample *s) {
     sb out;
     sb_init(&out);
-    uint64_t now = koltp_now_unix_nano();
+    uint64_t now = kotlp_now_unix_nano();
     sb_puts(&out, "{\"resourceMetrics\":[{");
     otel_resource(&out, cfg, pid);
-    sb_puts(&out, ",\"scopeMetrics\":[{\"scope\":{\"name\":\"" KOLTP_SCOPE_NAME
-                  "\",\"version\":\"" KOLTP_VERSION "\"},\"metrics\":[");
+    sb_puts(&out, ",\"scopeMetrics\":[{\"scope\":{\"name\":\"" KOTLP_SCOPE_NAME
+                  "\",\"version\":\"" KOTLP_VERSION "\"},\"metrics\":[");
     bool first = true;
 #define SEP() do { if (!first) sb_putc(&out, ','); first = false; } while (0)
     if (s->have_cpu) {
@@ -394,12 +394,12 @@ static void *sampler_main(void *arg) {
     while (!m->stop) {
         sample s;
         if (collect(m->pid, &s)) {
-            uint64_t now = koltp_now_unix_nano();
+            uint64_t now = kotlp_now_unix_nano();
             if (m->have_prev) {
                 double wall = (double)(now - m->prev_ns) / 1e9;
-                s.cpu_util_user = koltp_cpu_utilization(
+                s.cpu_util_user = kotlp_cpu_utilization(
                     s.cpu_user_seconds - m->prev_cpu_user, wall, m->ncpu);
-                s.cpu_util_sys = koltp_cpu_utilization(
+                s.cpu_util_sys = kotlp_cpu_utilization(
                     s.cpu_sys_seconds - m->prev_cpu_sys, wall, m->ncpu);
                 s.have_cpu_util = true;
             }
@@ -414,11 +414,11 @@ static void *sampler_main(void *arg) {
     return NULL;
 }
 
-metrics_sampler *metrics_start(const koltp_config *cfg, pid_t child_pid) {
+metrics_sampler *metrics_start(const kotlp_config *cfg, pid_t child_pid) {
     static metrics_sampler m;
     m.cfg = cfg;
     m.pid = child_pid;
-    m.start_ns = koltp_now_unix_nano();
+    m.start_ns = kotlp_now_unix_nano();
     m.ncpu = (int)sysconf(_SC_NPROCESSORS_ONLN);
     if (m.ncpu < 1) m.ncpu = 1;
     m.have_prev = false;
@@ -439,7 +439,7 @@ void metrics_stop(metrics_sampler *m) {
     m->started = false;
 }
 
-void metrics_emit_final(const koltp_config *cfg, pid_t child_pid,
+void metrics_emit_final(const kotlp_config *cfg, pid_t child_pid,
                         const struct rusage *ru) {
     sample s;
     memset(&s, 0, sizeof(s));
@@ -451,10 +451,10 @@ void metrics_emit_final(const koltp_config *cfg, pid_t child_pid,
     s.have_mem = true;
     /* ru_maxrss is KiB on Linux, bytes on macOS/BSD. Decide at runtime so the
      * single APE binary reports bytes correctly on whichever OS it runs. */
-    s.rss_bytes = (long long)ru->ru_maxrss * (KOLTP_IS_LINUX() ? 1024 : 1);
+    s.rss_bytes = (long long)ru->ru_maxrss * (KOTLP_IS_LINUX() ? 1024 : 1);
     s.have_io = true;
     s.read_bytes = (long long)ru->ru_inblock * 512;
     s.write_bytes = (long long)ru->ru_oublock * 512;
-    uint64_t start = koltp_now_unix_nano();
+    uint64_t start = kotlp_now_unix_nano();
     emit_sample(cfg, child_pid, start, &s);
 }

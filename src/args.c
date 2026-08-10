@@ -1,8 +1,8 @@
-/* args.c - command-line parsing for koltp.
+/* args.c - command-line parsing for kotlp.
  *
  * Kept separate from main.c so the parser can be exercised directly by the unit
  * tests (the test runner links every object except main.o). */
-#include "koltp.h"
+#include "kotlp.h"
 
 #include <libgen.h>
 #include <stdio.h>
@@ -11,11 +11,11 @@
 
 void usage(FILE *f) {
     fprintf(f,
-        "koltp " KOLTP_VERSION " - portable OpenTelemetry process wrapper\n"
+        "kotlp " KOTLP_VERSION " - portable OpenTelemetry process wrapper\n"
         "\n"
         "Usage:\n"
-        "  koltp [options] -- <command> [args...]\n"
-        "  koltp [options] <command> [args...]\n"
+        "  kotlp [options] -- <command> [args...]\n"
+        "  kotlp [options] <command> [args...]\n"
         "\n"
         "Wraps <command>, emitting OpenTelemetry JSON (NDJSON) to the console:\n"
         "  - logs   : the child's stdout/stderr as OTLP log records\n"
@@ -41,7 +41,7 @@ void usage(FILE *f) {
         "                           (default: json): 'json' or 'protobuf'\n"
         "                           (the receiver accepts both)\n"
         "  -f, --format FORMAT      output format (default: kjson):\n"
-        "                             kjson - ::{\"oltp\":<json>}:: framed records\n"
+        "                             kjson - ::{\"otlp\":<json>}:: framed records\n"
         "                             json  - bare OTLP JSON (newline-delimited)\n"
         "      --log-dir DIR        write every record as bare OTLP NDJSON to\n"
         "                           DIR/log.ndjson (created if needed); the\n"
@@ -50,13 +50,13 @@ void usage(FILE *f) {
         "      --log-flush-interval SECONDS\n"
         "                           rotate the log dir file every SECONDS into\n"
         "                           log-1.ndjson, log-2.ndjson, ... and report\n"
-        "                           koltp.log.file.count on the root span\n"
+        "                           kotlp.log.file.count on the root span\n"
         "                           (requires --log-dir)\n"
         "  -V, --version            print version and exit\n"
         "  -h, --help               print this help and exit\n");
 }
 
-int parse_args(int argc, char **argv, koltp_config *cfg) {
+int parse_args(int argc, char **argv, kotlp_config *cfg) {
     cfg->service_name = getenv("OTEL_SERVICE_NAME");
     cfg->interval_ms = 1000;
     cfg->otlp_port = 4318;
@@ -82,7 +82,7 @@ int parse_args(int argc, char **argv, koltp_config *cfg) {
             usage(stdout);
             exit(0);
         } else if (strcmp(a, "-V") == 0 || strcmp(a, "--version") == 0) {
-            printf("koltp %s\n", KOLTP_VERSION);
+            printf("kotlp %s\n", KOTLP_VERSION);
             exit(0);
         } else if (strcmp(a, "-s") == 0 || strcmp(a, "--service-name") == 0) {
             if (++i >= argc) goto missing;
@@ -121,7 +121,7 @@ int parse_args(int argc, char **argv, koltp_config *cfg) {
                 cfg->otlp_protocol = "http/protobuf";
             } else {
                 fprintf(stderr,
-                        "koltp: invalid protocol '%s' (expected 'json' or "
+                        "kotlp: invalid protocol '%s' (expected 'json' or "
                         "'protobuf')\n",
                         argv[i]);
                 return -1;
@@ -134,7 +134,7 @@ int parse_args(int argc, char **argv, koltp_config *cfg) {
             cfg->log_flush_interval_s = strtol(argv[i], NULL, 10);
             if (cfg->log_flush_interval_s < 1) {
                 fprintf(stderr,
-                        "koltp: invalid --log-flush-interval '%s' (expected a "
+                        "kotlp: invalid --log-flush-interval '%s' (expected a "
                         "number of seconds >= 1)\n",
                         argv[i]);
                 return -1;
@@ -147,29 +147,29 @@ int parse_args(int argc, char **argv, koltp_config *cfg) {
                 cfg->wrap_otel = false;
             } else {
                 fprintf(stderr,
-                        "koltp: invalid format '%s' (expected 'kjson' or 'json')\n",
+                        "kotlp: invalid format '%s' (expected 'kjson' or 'json')\n",
                         argv[i]);
                 return -1;
             }
         } else {
-            fprintf(stderr, "koltp: unknown option '%s'\n", a);
+            fprintf(stderr, "kotlp: unknown option '%s'\n", a);
             usage(stderr);
             return -1;
         }
         continue;
     missing:
-        fprintf(stderr, "koltp: option '%s' requires an argument\n", a);
+        fprintf(stderr, "kotlp: option '%s' requires an argument\n", a);
         return -1;
     }
 
     /* Checked after the loop so the two options may be given in either order. */
     if (cfg->log_flush_interval_s > 0 && !cfg->log_dir) {
-        fprintf(stderr, "koltp: --log-flush-interval requires --log-dir\n");
+        fprintf(stderr, "kotlp: --log-flush-interval requires --log-dir\n");
         return -1;
     }
 
     if (i >= argc) {
-        fprintf(stderr, "koltp: no command given\n\n");
+        fprintf(stderr, "kotlp: no command given\n\n");
         usage(stderr);
         return -1;
     }

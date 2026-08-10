@@ -33,11 +33,11 @@ jobs:
         run: |
           mkdir -p dist
           # The single APE: runs on Linux/macOS/Windows/BSD, amd64+arm64.
-          cp build/koltp dist/koltp
+          cp build/kotlp dist/kotlp
           # Windows requires a .exe/.com extension to launch the same bytes.
-          cp build/koltp dist/koltp.exe
+          cp build/kotlp dist/kotlp.exe
           cd dist
-          sha256sum koltp koltp.exe > SHA256SUMS
+          sha256sum kotlp kotlp.exe > SHA256SUMS
           echo "----- checksums -----"
           cat SHA256SUMS
 
@@ -46,6 +46,6 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           gh release create "${GITHUB_REF_NAME}" \
-            --title "koltp ${GITHUB_REF_NAME}" \
+            --title "kotlp ${GITHUB_REF_NAME}" \
             --generate-notes \
-            dist/koltp dist/koltp.exe dist/SHA256SUMS
+            dist/kotlp dist/kotlp.exe dist/SHA256SUMS
