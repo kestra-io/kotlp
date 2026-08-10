@@ -60,8 +60,8 @@ static void test_mark_descendants(void) {
 }
 
 static void test_mark_descendants_unordered(void) {
-    /* descendants listed BEFORE their ancestors: the fixpoint must still find
-     * them (300's parent 200 is not yet marked when 300 is first visited). */
+    /* descendants listed BEFORE their ancestors, which is what readdir on /proc
+     * actually hands back: 300 is reached before anything is known about 200. */
     pid_t pid[] = {300, 200, 100, 500};
     pid_t ppid[] = {200, 100, 1, 999};
     bool in[4];
@@ -70,6 +70,103 @@ static void test_mark_descendants_unordered(void) {
     CHECK(in[1] == true);  /* 200 */
     CHECK(in[2] == true);  /* 100 (root) */
     CHECK(in[3] == false); /* 500 */
+}
+
+/* Number of entries in `in` that disagree with "index lies in [lo,hi]".
+ * Returns a count rather than asserting per element, so a large table stays one
+ * CHECK and a failure reports how far off it was. */
+static int count_wrong(const bool *in, int n, int lo, int hi) {
+    int wrong = 0;
+    for (int i = 0; i < n; i++) {
+        bool want = (i >= lo && i <= hi);
+        if (in[i] != want) wrong++;
+    }
+    return wrong;
+}
+
+static void test_mark_descendants_deep_chain(void) {
+    /* A chain far deeper than a process tree ever gets, walked in the worst
+     * order (each entry's parent appears later in the table). */
+    enum { N = 500 };
+    static pid_t pid[N];
+    static pid_t ppid[N];
+    static bool in[N];
+    for (int i = 0; i < N; i++) {
+        pid[i] = (pid_t)(1000 + i);
+        ppid[i] = (pid_t)(1000 + i + 1); /* parent is the NEXT entry */
+    }
+    ppid[N - 1] = 1;              /* the last entry is the top of the chain */
+    kotlp_mark_descendants(pid, ppid, N, pid[N - 1], in);
+    CHECK(count_wrong(in, N, 0, N - 1) == 0);
+    /* Rooted halfway down: only that entry and the ones below it are in. Every
+     * index is verified, not a few spots - this is where an off-by-one in the
+     * walk's unwind would show up. */
+    kotlp_mark_descendants(pid, ppid, N, pid[250], in);
+    CHECK(count_wrong(in, N, 0, 250) == 0);
+}
+
+/* The two sizes that straddle the internal switch between the linear walk and
+ * the fixpoint fallback. Kept shallow (one root, everything else a direct
+ * child) because the fallback is quadratic and a deep chain at this size would
+ * take minutes. */
+static void test_mark_descendants_large(void) {
+    enum { BIG = 9000 }; /* comfortably past the internal MAX_PROCS of 8192 */
+    static pid_t pid[BIG];
+    static pid_t ppid[BIG];
+    static bool in[BIG];
+    for (int i = 0; i < BIG; i++) {
+        pid[i] = (pid_t)(1000 + i);
+        ppid[i] = 1000; /* every entry is a direct child of pid[0] */
+    }
+    ppid[0] = 1;
+
+    /* just under the threshold: the linear path */
+    kotlp_mark_descendants(pid, ppid, 8192, pid[0], in);
+    CHECK(count_wrong(in, 8192, 0, 8191) == 0);
+
+    /* over it: the fixpoint fallback, which must agree */
+    kotlp_mark_descendants(pid, ppid, BIG, pid[0], in);
+    CHECK(count_wrong(in, BIG, 0, BIG - 1) == 0);
+
+    /* and with the root absent, both paths mark nothing */
+    kotlp_mark_descendants(pid, ppid, BIG, (pid_t)7, in);
+    CHECK(count_wrong(in, BIG, 1, 0) == 0); /* empty range: nothing in tree */
+}
+
+/* pid 0 is not a real process, but the exported contract does not exclude it
+ * and an implementation that reserves 0 as an empty-slot marker would silently
+ * drop it and everything below it. */
+static void test_mark_descendants_pid_zero(void) {
+    pid_t pid[] = {0, 100, 200};
+    pid_t ppid[] = {1, 0, 100};
+    bool in[3];
+    kotlp_mark_descendants(pid, ppid, 3, 0, in);
+    CHECK(in[0] == true); /* the root itself */
+    CHECK(in[1] == true); /* child of pid 0 */
+    CHECK(in[2] == true); /* grandchild */
+}
+
+static void test_mark_descendants_self_parent(void) {
+    /* /proc is not an atomic snapshot, so a malformed link must not loop. */
+    pid_t pid[] = {100, 200, 300};
+    pid_t ppid[] = {1, 200, 100}; /* 200 is its own parent */
+    bool in[3];
+    kotlp_mark_descendants(pid, ppid, 3, 100, in);
+    CHECK(in[0] == true);  /* the root */
+    CHECK(in[1] == false); /* self-parented, never reaches the root */
+    CHECK(in[2] == true);  /* an ordinary child */
+}
+
+static void test_mark_descendants_cycle(void) {
+    /* 200 -> 300 -> 200 is a closed loop with no path to the root */
+    pid_t pid[] = {100, 200, 300, 400};
+    pid_t ppid[] = {1, 300, 200, 200}; /* 400 hangs off the cycle */
+    bool in[4];
+    kotlp_mark_descendants(pid, ppid, 4, 100, in);
+    CHECK(in[0] == true);  /* the root */
+    CHECK(in[1] == false); /* in the cycle */
+    CHECK(in[2] == false); /* in the cycle */
+    CHECK(in[3] == false); /* below the cycle, so also unreachable */
 }
 
 static void test_mark_descendants_root_absent(void) {
@@ -284,6 +381,11 @@ void test_metrics(void) {
     test_parse_stat_malformed();
     test_mark_descendants();
     test_mark_descendants_unordered();
+    test_mark_descendants_deep_chain();
+    test_mark_descendants_large();
+    test_mark_descendants_pid_zero();
+    test_mark_descendants_self_parent();
+    test_mark_descendants_cycle();
     test_mark_descendants_root_absent();
     test_cpu_utilization();
     test_retire_nothing_exited();
