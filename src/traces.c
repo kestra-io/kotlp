@@ -68,8 +68,6 @@ enum {
      * while still giving an in-flight final export from the child's SDK a
      * chance to land. */
     STOP_GRACE_MS = 500,
-    /* Refuse to buffer an unbounded request body. */
-    MAX_REQUEST_BYTES = 64 * 1024 * 1024,
 };
 
 /* Parse Content-Length from the request headers. `header_len` bounds the scan
@@ -92,7 +90,7 @@ static long parse_content_length(const char *headers, size_t header_len) {
             char *end = NULL;
             long v = strtol(p + 15, &end, 10);
             if (end == p + 15 || errno == ERANGE) return -2;
-            if (v < 0 || v > MAX_REQUEST_BYTES) return -2;
+            if (v < 0 || v > KOTLP_MAX_REQUEST_BYTES) return -2;
             return v;
         }
         const char *nl = memchr(p, '\n', (size_t)(limit - p));
@@ -100,6 +98,33 @@ static long parse_content_length(const char *headers, size_t header_len) {
         p = nl + 1;
     }
     return -1;
+}
+
+kotlp_req_state kotlp_request_state(size_t buffered, long header_end,
+                                    long body_start, long content_length) {
+    /* The allowance is measured on the headers themselves, before the
+     * terminator has turned up and again once it has. Checking only the first
+     * would make the verdict depend on how much of an oversized head happened
+     * to arrive in the read that carried the terminator - i.e. on where a read
+     * boundary landed, which is exactly what makes a limit untestable. */
+    if (header_end < 0) {
+        return buffered > (size_t)KOTLP_MAX_HEADER_BYTES
+                   ? KOTLP_REQ_HEADERS_TOO_LARGE
+                   : KOTLP_REQ_NEED_MORE;
+    }
+    if (header_end > KOTLP_MAX_HEADER_BYTES) return KOTLP_REQ_HEADERS_TOO_LARGE;
+    /* No Content-Length: nothing delimits a body, so there is nothing more to
+     * wait for. handle_conn reports the drop; a chunked body is not decoded. */
+    if (content_length < 0) return KOTLP_REQ_COMPLETE;
+    /* parse_content_length already refuses anything past the cap, so this is a
+     * backstop - but it is the backstop that makes "keep reading" terminate at
+     * all, and it should not depend on a caller invariant recorded elsewhere. */
+    if (content_length > KOTLP_MAX_REQUEST_BYTES) return KOTLP_REQ_BODY_TOO_LARGE;
+    /* `buffered` cannot outrun a long here: it is bounded by the two caps above
+     * plus one read, and both are far below LONG_MAX on every cosmocc target. */
+    long have_body = (long)buffered - body_start;
+    if (have_body < 0) have_body = 0;
+    return have_body >= content_length ? KOTLP_REQ_COMPLETE : KOTLP_REQ_NEED_MORE;
 }
 
 /* Case-insensitive substring search within the first `len` bytes of `hay`. */
@@ -143,9 +168,9 @@ static void handle_conn(trace_receiver *t, int fd) {
     uint64_t last_progress = began;
     uint64_t stop_seen = 0;
     bool timed_out = false;
-    bool capped = false;
     bool bad_method = false;
     bool bad_length = false;
+    bool bad_headers = false;
 
     /* Read until we have the full headers plus the declared body, or until a
      * deadline passes. Every wait is bounded: the receiver is a single thread
@@ -211,21 +236,30 @@ static void handle_conn(trace_receiver *t, int fd) {
                 }
             }
         }
-        if (header_end >= 0) {
-            long have_body = (long)req.len - body_start;
-            if (content_length < 0 || have_body >= content_length) break;
+        kotlp_req_state st = kotlp_request_state(req.len, header_end, body_start,
+                                                 content_length);
+        if (st == KOTLP_REQ_COMPLETE) break;
+        if (st == KOTLP_REQ_HEADERS_TOO_LARGE) {
+            bad_headers = true;
+            break;
         }
-        if (req.len > (size_t)MAX_REQUEST_BYTES) {
-            capped = true;
+        if (st == KOTLP_REQ_BODY_TOO_LARGE) {
+            /* Unreachable today - parse_content_length rejects the same value a
+             * moment earlier, with the same 400 and the same message. */
+            bad_length = true;
             break;
         }
     }
 
-    if (bad_method || bad_length) {
+    if (bad_method || bad_length || bad_headers) {
         const char *reply = bad_method ? HTTP_405 : HTTP_400;
         if (bad_length)
             fprintf(stderr, "kotlp: trace receiver rejected a request with an "
                             "unusable Content-Length\n");
+        else if (bad_headers)
+            fprintf(stderr, "kotlp: trace receiver rejected a request whose "
+                            "headers exceeded %d bytes\n",
+                    KOTLP_MAX_HEADER_BYTES);
         ssize_t wr = write(fd, reply, strlen(reply));
         (void)wr;
         sb_free(&req);
@@ -270,9 +304,7 @@ static void handle_conn(trace_receiver *t, int fd) {
             fprintf(stderr,
                     "kotlp: trace receiver dropped a truncated payload (%ld of "
                     "%ld bytes%s)\n",
-                    have_body, content_length,
-                    timed_out ? ", timed out"
-                              : capped ? ", over the size cap" : "");
+                    have_body, content_length, timed_out ? ", timed out" : "");
         } else { /* content_length < 0: the header was absent altogether */
             fprintf(stderr,
                     "kotlp: trace receiver dropped a %ld-byte payload with no "

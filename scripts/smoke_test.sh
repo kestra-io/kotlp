@@ -371,10 +371,20 @@ if command -v curl >/dev/null 2>&1; then
         -X POST -H 'Content-Type: application/json' \
         --data '' "http://127.0.0.1:$PROBEPORT/v1/traces")"
     HUGE_CODE=000
+    HDR_CODE=000
     if command -v nc >/dev/null 2>&1; then
         printf 'POST /v1/traces HTTP/1.1\r\nContent-Length: 9223372036854775807\r\n\r\nabcdefgh' \
             | nc 127.0.0.1 "$PROBEPORT" 2>/dev/null | head -1 > "$TMP/huge.reply" || true
         HUGE_CODE="$(sed -n 's|HTTP/1\.1 \([0-9]*\).*|\1|p' "$TMP/huge.reply" 2>/dev/null)"
+        # Headers past the allowance are refused rather than buffered. The
+        # allowance is judged on the headers themselves, so the verdict cannot
+        # depend on where a read boundary lands: 200 KiB of headers is over it
+        # however the bytes arrive.
+        { printf 'POST /v1/traces HTTP/1.1\r\nX-Pad: '
+          awk 'BEGIN { while (i++ < 200000) printf "y" }'
+          printf '\r\nContent-Length: 2\r\n\r\n{}'; } \
+            | nc 127.0.0.1 "$PROBEPORT" 2>/dev/null | head -1 > "$TMP/hdr.reply" || true
+        HDR_CODE="$(sed -n 's|HTTP/1\.1 \([0-9]*\).*|\1|p' "$TMP/hdr.reply" 2>/dev/null)"
         # whatever it answers, it must still be alive to answer at all
         STILL="$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 \
             "http://127.0.0.1:$PROBEPORT/")"
@@ -392,6 +402,12 @@ if command -v curl >/dev/null 2>&1; then
     # BELOW this check, not above it.
     if grep -q 'dropped a' "$PROBEERR"; then
         fail "the receiver reported a dropped payload for a well-formed request: $(grep 'dropped a' "$PROBEERR" | head -1)"
+    fi
+    # A body declared at the 64 MiB cap is deliberately not exercised here - it
+    # would mean pushing 64 MiB through the smoke test on every CI run. That
+    # boundary is covered deterministically by test_traces.c instead.
+    if [ -n "$HDR_CODE" ] && [ "$HDR_CODE" != "000" ] && [ "$HDR_CODE" != "400" ]; then
+        fail "headers past the allowance should be refused with 400, got HTTP $HDR_CODE"
     fi
     [ "$STILL" = "405" ] || \
         fail "the receiver died on an absurd Content-Length (follow-up probe got '$STILL')"

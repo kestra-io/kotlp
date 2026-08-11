@@ -300,6 +300,40 @@ void metrics_emit_final(const kotlp_config *cfg, pid_t child_pid,
  * Binds cfg->otlp_port on loopback, falling back to an OS-assigned ephemeral
  * port when the requested one is unavailable.                                 */
 typedef struct trace_receiver trace_receiver;
+
+/* What the receiver is willing to buffer for one request.
+ *
+ * The header allowance is deliberately separate from the body cap. A single cap
+ * over headers+body measures something different from what Content-Length
+ * validation accepts (a body): a declared length within body_start bytes of the
+ * cap passed validation and was then discarded mid-read, while the peer still
+ * got its 200 OK, so the SDK never retried. Whether it fired depended on where
+ * a read boundary landed - an intermittent silent drop rather than a clean
+ * rejection. Keep the two bounds measuring the two things. */
+enum {
+    KOTLP_MAX_HEADER_BYTES = 64 * 1024,
+    KOTLP_MAX_REQUEST_BYTES = 64 * 1024 * 1024,
+};
+
+/* How much of a request has arrived, given `buffered` bytes read so far.
+ * `header_end` is < 0 until the "\r\n\r\n" terminator is seen; `content_length`
+ * is what the Content-Length header said (< 0 when absent).
+ *
+ * This is the only thing bounding how much the receiver buffers, so it checks
+ * both limits itself rather than trusting the caller to have validated the
+ * declared length first.
+ *
+ * Pure; exposed for unit testing - the boundary it guards is otherwise only
+ * reachable with an actual 64 MiB request. */
+typedef enum {
+    KOTLP_REQ_NEED_MORE = 0,    /* keep reading                               */
+    KOTLP_REQ_COMPLETE,         /* headers and the declared body are all here  */
+    KOTLP_REQ_HEADERS_TOO_LARGE,/* no terminator within the header allowance   */
+    KOTLP_REQ_BODY_TOO_LARGE    /* declared body past the cap we will buffer   */
+} kotlp_req_state;
+kotlp_req_state kotlp_request_state(size_t buffered, long header_end,
+                                    long body_start, long content_length);
+
 trace_receiver *traces_start(const kotlp_config *cfg);
 /* The port actually bound (may differ from cfg->otlp_port after fallback).    */
 int traces_port(const trace_receiver *t);
