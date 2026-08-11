@@ -229,7 +229,9 @@ typedef struct {
  * then reappears, its contribution is counted twice. That inflates the counter,
  * which is the safe direction to be wrong in: the series stays monotonic.
  *
- * Pure; exposed for unit testing. */
+ * Pure in its results, but NOT REENTRANT: `cur` is indexed through static
+ * scratch (like kotlp_mark_descendants) so the membership test is linear rather
+ * than O(prev_n x cur_n). Called from the metrics sampler thread only. */
 void kotlp_retire_exited(const kotlp_tree_member *prev, int prev_n,
                          const kotlp_tree_member *cur, int cur_n,
                          double *ret_cpu_user, double *ret_cpu_sys,

@@ -147,17 +147,78 @@ bool kotlp_parse_proc_stat(const char *line, kotlp_proc_stat *out) {
     return true;
 }
 
+/* Scratch for the linear membership test in kotlp_retire_exited. Static, like
+ * the marking map below: both run on the sampler thread only.
+ * 0 = empty, otherwise the index into `cur` plus one - so there is no reserved
+ * key and a pid of 0 is an ordinary entry. */
+enum { RETIRE_MAP_CAP = 2 * MAX_PROCS };
+/* The insertion probe scans for an empty slot without a cap, so it terminates
+ * only because at most MAX_PROCS keys go into RETIRE_MAP_CAP slots. */
+_Static_assert(RETIRE_MAP_CAP >= 2 * MAX_PROCS, "load factor must stay <= 0.5");
+_Static_assert((RETIRE_MAP_CAP & (RETIRE_MAP_CAP - 1)) == 0,
+               "the probe mask needs a power of two");
+static int s_retire_idx[RETIRE_MAP_CAP];
+
+static bool member_eq(const kotlp_tree_member *a, const kotlp_tree_member *b) {
+    return a->pid == b->pid && a->starttime_ticks == b->starttime_ticks;
+}
+
+static unsigned member_slot(const kotlp_tree_member *m) {
+    /* Both halves of the identity feed the hash. Hashing the pid alone would
+     * put a recycled pid in its predecessor's slot, so every lookup for one
+     * would have to walk past the other. */
+    uint64_t k = (uint64_t)(uint32_t)m->pid * 0x9E3779B97F4A7C15ull;
+    k ^= (uint64_t)m->starttime_ticks * 0xC2B2AE3D27D4EB4Full;
+    k ^= k >> 29;
+    return (unsigned)k & (RETIRE_MAP_CAP - 1);
+}
+
 void kotlp_retire_exited(const kotlp_tree_member *prev, int prev_n,
                          const kotlp_tree_member *cur, int cur_n,
                          double *ret_cpu_user, double *ret_cpu_sys,
                          long long *ret_read, long long *ret_write) {
+    if (prev_n <= 0) return;
+
+    /* Index `cur` once, then answer each "did this member survive?" with a
+     * lookup. The pairwise scan this replaces was O(prev_n x cur_n) per sample,
+     * which is the same quadratic shape kotlp_mark_descendants shed - just keyed
+     * on tree size instead of host size. A wide fan-out (`make -j64` under a
+     * short --interval) put millions of comparisons in every interval.
+     * Above MAX_PROCS the map cannot hold the keys at its load factor, so keep
+     * the pairwise scan for that case; collect() never produces one that big. */
+    bool indexed = cur_n > 0 && cur_n <= MAX_PROCS;
+    if (indexed) {
+        memset(s_retire_idx, 0, sizeof(s_retire_idx));
+        for (int j = 0; j < cur_n; j++) {
+            unsigned h = member_slot(&cur[j]);
+            while (s_retire_idx[h] != 0 &&
+                   !member_eq(&cur[s_retire_idx[h] - 1], &cur[j]))
+                h = (h + 1) & (RETIRE_MAP_CAP - 1);
+            /* First occurrence wins; a duplicate identity would answer the same
+             * membership question either way. */
+            if (s_retire_idx[h] == 0) s_retire_idx[h] = j + 1;
+        }
+    }
+
     for (int i = 0; i < prev_n; i++) {
         bool still_alive = false;
-        for (int j = 0; j < cur_n; j++) {
-            if (prev[i].pid == cur[j].pid &&
-                prev[i].starttime_ticks == cur[j].starttime_ticks) {
-                still_alive = true;
-                break;
+        if (indexed) {
+            unsigned h = member_slot(&prev[i]);
+            for (unsigned probes = 0; probes < RETIRE_MAP_CAP; probes++) {
+                int v = s_retire_idx[h];
+                if (v == 0) break; /* an empty slot ends the probe chain */
+                if (member_eq(&cur[v - 1], &prev[i])) {
+                    still_alive = true;
+                    break;
+                }
+                h = (h + 1) & (RETIRE_MAP_CAP - 1);
+            }
+        } else {
+            for (int j = 0; j < cur_n; j++) {
+                if (member_eq(&prev[i], &cur[j])) {
+                    still_alive = true;
+                    break;
+                }
             }
         }
         if (still_alive) continue;
