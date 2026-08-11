@@ -363,6 +363,13 @@ if command -v curl >/dev/null 2>&1; then
     POST_CODE="$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 \
         -X POST -H 'Content-Type: application/json' \
         --data '{"resourceSpans":[]}' "http://127.0.0.1:$PROBEPORT/v1/traces")"
+    # An empty POST - a bare `curl -X POST`, an SDK flushing an empty batch, a
+    # liveness probe - is a successful export of nothing. It must be accepted
+    # silently: it used to fall through to the truncated-payload diagnostic and
+    # write a spurious error line to kotlp's stderr on every such request.
+    EMPTY_CODE="$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 \
+        -X POST -H 'Content-Type: application/json' \
+        --data '' "http://127.0.0.1:$PROBEPORT/v1/traces")"
     HUGE_CODE=000
     if command -v nc >/dev/null 2>&1; then
         printf 'POST /v1/traces HTTP/1.1\r\nContent-Length: 9223372036854775807\r\n\r\nabcdefgh' \
@@ -378,6 +385,14 @@ if command -v curl >/dev/null 2>&1; then
 
     [ "$GET_CODE" = "405" ] || fail "GET / should be refused, got HTTP $GET_CODE"
     [ "$POST_CODE" = "200" ] || fail "a real export should still be accepted, got HTTP $POST_CODE"
+    [ "$EMPTY_CODE" = "200" ] || fail "an empty export should be accepted, got HTTP $EMPTY_CODE"
+    # Every probe above this point is either well-formed or rejected outright
+    # ("rejected a ...", not "dropped a ..."), so nothing in this section may be
+    # reported as a dropped payload. Add probes that legitimately drop one
+    # BELOW this check, not above it.
+    if grep -q 'dropped a' "$PROBEERR"; then
+        fail "the receiver reported a dropped payload for a well-formed request: $(grep 'dropped a' "$PROBEERR" | head -1)"
+    fi
     [ "$STILL" = "405" ] || \
         fail "the receiver died on an absurd Content-Length (follow-up probe got '$STILL')"
     if [ -n "$HUGE_CODE" ] && [ "$HUGE_CODE" = "200" ]; then
