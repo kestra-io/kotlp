@@ -183,25 +183,35 @@ if grep -q '"stringValue":"\\r\\r' "$MULTIOUT"; then
 fi
 
 # 14. fd hygiene: everything kotlp opens for itself is close-on-exec, so the
-#     wrapped command inherits nothing but stdin/stdout/stderr. Run with BOTH a
-#     log dir and a trace receiver - the two descriptors that used to leak - and
-#     have the child report its OWN fd table rather than reading the tree-summed
-#     process.open_file_descriptor.count: the metric depends on how many
-#     processes `sh -c` forks (some shells tail-exec a single command), which
-#     would let the leak slip through on a one-process tree.
-#     Expect exactly 0, 1, 2 plus `ls`'s own directory fd (3); the leaky version
-#     also showed the log file and the listening socket.
+#     wrapped command inherits nothing of ours. The child reports its OWN fd
+#     table rather than the tree-summed process.open_file_descriptor.count,
+#     which depends on how many processes `sh -c` forks (some shells tail-exec
+#     a single command) and so cannot see the leak on a one-process tree.
+#
+#     Compare two runs rather than asserting an absolute set. The child also
+#     inherits whatever the *invoking* environment left open and inheritable -
+#     CI runners routinely have a couple of high-numbered descriptors open, so
+#     "expect exactly 0 1 2 3" holds on a clean shell and fails everywhere else.
+#     Both runs inherit the same ambient set, so differencing them isolates what
+#     kotlp itself contributed: with --log-dir and a receiver, that must be
+#     nothing. --no-logs makes the child's output pass through verbatim, so the
+#     fd list arrives on stdout unwrapped either way.
 if [ -d /proc/self/fd ]; then
+    FDCMD='ls -1 /proc/self/fd'
+    # Sorted for comm, which needs its inputs in the collating order it compares
+    # in - a numeric sort would put 142 before 2 and comm would report garbage.
+    "$BIN" -s smoke-fds-base --no-logs --no-metrics --no-traces -- \
+        sh -c "$FDCMD" 2>/dev/null | sed 's/[^0-9]//g' | grep . | sort > "$TMP/fds-base"
+    # the same, with both descriptors that used to leak actually open
     FDDIR="$TMP/fdlogs"
-    "$BIN" -s smoke-fds --no-metrics -p 4320 --log-dir "$FDDIR" -- \
-        sh -c 'ls -1 /proc/self/fd' >/dev/null 2>&1
-    FDFILE="$FDDIR/log.ndjson"
-    [ -f "$FDFILE" ] || fail "fd check: --log-dir produced no $FDFILE"
-    grep -q 'resourceSpans' "$FDFILE" || \
-        fail "fd check: no root span, so the trace receiver never bound a socket to leak"
-    FDS="$(grep -o '"stringValue":"[0-9]*"' "$FDFILE" | sed 's/[^0-9]//g' | sort -n | tr '\n' ' ')"
-    [ "$FDS" = "0 1 2 3 " ] || \
-        fail "child inherits kotlp descriptors: its fd table is [$FDS], want [0 1 2 3 ]"
+    "$BIN" -s smoke-fds --no-logs --no-metrics -p 0 --log-dir "$FDDIR" -- \
+        sh -c "$FDCMD" 2>/dev/null | sed 's/[^0-9]//g' | grep . | sort > "$TMP/fds-full"
+    [ -s "$TMP/fds-base" ] || fail "fd check: the baseline run listed no descriptors"
+    [ -f "$FDDIR/log.ndjson" ] || fail "fd check: --log-dir produced no log.ndjson"
+    grep -q 'resourceSpans' "$FDDIR/log.ndjson" || \
+        fail "fd check: no root span, so the receiver never bound a socket to leak"
+    EXTRA="$(comm -13 "$TMP/fds-base" "$TMP/fds-full" | sort -n | tr '\n' ' ')"
+    [ -z "$EXTRA" ] || fail "child inherits kotlp descriptors: [$EXTRA] (baseline run had [$(sort -n "$TMP/fds-base" | tr '\n' ' ')])"
 else
     echo "smoke_test: no /proc on this platform, skipping the fd inheritance check"
 fi
