@@ -81,6 +81,12 @@ struct metrics_sampler {
      * accumulate(), which sampler_main calls immediately before emit_sample();
      * do not introduce a path that accumulates without emitting. */
     bool have_samples; /* false when live sampling never produced a record */
+    /* Whether any sample actually managed to read /proc/<pid>/io. It is not
+     * implied by have_samples: a kernel built without CONFIG_TASK_IO_ACCOUNTING,
+     * or a child that dropped privileges (EACCES on its own /proc/<pid>/io),
+     * samples fine and never yields a single IO reading. Without this the final
+     * record would splice a hard 0 in where the rusage figure belongs. */
+    bool have_io_samples;
     double last_cpu_user;
     double last_cpu_sys;
     long long last_read;
@@ -175,6 +181,29 @@ kotlp_counters kotlp_cumulative(kotlp_counters live, kotlp_counters retired,
     if (out.cpu_sys < floor.cpu_sys) out.cpu_sys = floor.cpu_sys;
     if (out.read_bytes < floor.read_bytes) out.read_bytes = floor.read_bytes;
     if (out.write_bytes < floor.write_bytes) out.write_bytes = floor.write_bytes;
+    return out;
+}
+
+kotlp_counters kotlp_final_counters(kotlp_counters rusage, kotlp_counters last,
+                                    bool have_samples, bool have_io_samples) {
+    kotlp_counters out = rusage;
+    /* CPU is the same unit either way, and rusage additionally covers
+     * descendants that were reaped before any sample saw them, so take
+     * whichever is larger. */
+    if (have_samples) {
+        if (out.cpu_user < last.cpu_user) out.cpu_user = last.cpu_user;
+        if (out.cpu_sys < last.cpu_sys) out.cpu_sys = last.cpu_sys;
+    }
+    /* IO is NOT the same unit: ru_inblock/ru_oublock count block-IO operations,
+     * while the series so far is /proc's read_bytes/write_bytes. Continuing the
+     * series is more honest than splicing in a number computed a different way,
+     * in either direction - but only if there IS a series. When /proc IO was
+     * never readable the sampled side is a flat 0, and publishing that would
+     * replace a real (if differently-derived) figure with a made-up zero. */
+    if (have_io_samples) {
+        out.read_bytes = last.read_bytes;
+        out.write_bytes = last.write_bytes;
+    }
     return out;
 }
 
@@ -613,6 +642,11 @@ static void accumulate(metrics_sampler *m, sample *s) {
                             m->last_write};
     kotlp_counters out = kotlp_cumulative(live, retired, floor);
 
+    /* Record whether this sample saw a real /proc IO reading before the live
+     * flag is overwritten below. metrics_emit_final needs to tell "the series
+     * is genuinely 0 bytes" from "there was never a series". */
+    if (s->have_io) m->have_io_samples = true;
+
     s->cpu_user_seconds = out.cpu_user;
     s->cpu_sys_seconds = out.cpu_sys;
     s->read_bytes = out.read_bytes;
@@ -674,6 +708,7 @@ metrics_sampler *metrics_start(const kotlp_config *cfg, pid_t child_pid,
     m.retired_read = 0;
     m.retired_write = 0;
     m.have_samples = false;
+    m.have_io_samples = false;
     m.last_cpu_user = 0;
     m.last_cpu_sys = 0;
     m.last_read = 0;
@@ -710,20 +745,17 @@ void metrics_emit_final(const kotlp_config *cfg, pid_t child_pid,
     s.read_bytes = (long long)ru->ru_inblock * 512;
     s.write_bytes = (long long)ru->ru_oublock * 512;
 
-    if (m && m->have_samples) {
-        /* CPU is the same unit either way, and rusage additionally covers
-         * descendants that were reaped before any sample saw them, so take
-         * whichever is larger. */
-        if (s.cpu_user_seconds < m->last_cpu_user)
-            s.cpu_user_seconds = m->last_cpu_user;
-        if (s.cpu_sys_seconds < m->last_cpu_sys)
-            s.cpu_sys_seconds = m->last_cpu_sys;
-        /* IO is NOT the same unit: ru_inblock/ru_oublock count block-IO
-         * operations, while the series so far is /proc's read_bytes/write_bytes.
-         * Continuing the series is more honest than splicing in a number
-         * computed a different way, in either direction. */
-        s.read_bytes = m->last_read;
-        s.write_bytes = m->last_write;
+    if (m) {
+        kotlp_counters rusage = {s.cpu_user_seconds, s.cpu_sys_seconds,
+                                 s.read_bytes, s.write_bytes};
+        kotlp_counters last = {m->last_cpu_user, m->last_cpu_sys, m->last_read,
+                               m->last_write};
+        kotlp_counters out = kotlp_final_counters(rusage, last, m->have_samples,
+                                                  m->have_io_samples);
+        s.cpu_user_seconds = out.cpu_user;
+        s.cpu_sys_seconds = out.cpu_sys;
+        s.read_bytes = out.read_bytes;
+        s.write_bytes = out.write_bytes;
     }
     emit_sample(cfg, child_pid, start_ns, &s);
 }

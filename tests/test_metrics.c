@@ -376,6 +376,50 @@ static void test_published_series_never_decreases(void) {
     CHECK(last.cpu_user >= 3.0);
 }
 
+static void test_final_counters_no_samples(void) {
+    /* no live sampling at all (macOS/Windows/BSD): the rusage record stands */
+    kotlp_counters out = kotlp_final_counters(ctr(1.5, 0.5, 1024000, 512000),
+                                              ctr(0, 0, 0, 0), false, false);
+    CHECK_NEAR(out.cpu_user, 1.5);
+    CHECK(out.read_bytes == 1024000);
+    CHECK(out.write_bytes == 512000);
+}
+
+static void test_final_counters_continue_io_series(void) {
+    /* /proc IO was readable, so the final record continues that series rather
+     * than splicing in rusage's block-IO counts, which are a different unit */
+    kotlp_counters out = kotlp_final_counters(ctr(1.5, 0.5, 1024000, 512000),
+                                              ctr(2.0, 0.9, 4096, 8192), true,
+                                              true);
+    CHECK_NEAR(out.cpu_user, 2.0); /* the sampled CPU was higher */
+    CHECK_NEAR(out.cpu_sys, 0.9);
+    CHECK(out.read_bytes == 4096);
+    CHECK(out.write_bytes == 8192);
+}
+
+static void test_final_counters_io_never_sampled(void) {
+    /* Samples ran, but /proc/<pid>/io was never readable - no
+     * CONFIG_TASK_IO_ACCOUNTING, or the child dropped privileges. The sampled
+     * IO side is a flat 0, so publishing it would replace rusage's real figure
+     * with a made-up zero. CPU still reconciles: that flag is a separate one. */
+    kotlp_counters out = kotlp_final_counters(ctr(1.5, 0.5, 1024000, 512000),
+                                              ctr(2.0, 0.9, 0, 0), true, false);
+    CHECK_NEAR(out.cpu_user, 2.0);
+    CHECK(out.read_bytes == 1024000);
+    CHECK(out.write_bytes == 512000);
+}
+
+static void test_final_counters_rusage_wins_on_cpu(void) {
+    /* rusage covers descendants reaped between two samples, so it can exceed
+     * the sampled total - and then it is the more complete figure */
+    kotlp_counters out = kotlp_final_counters(ctr(9.0, 4.0, 0, 0),
+                                              ctr(2.0, 0.9, 100, 200), true,
+                                              true);
+    CHECK_NEAR(out.cpu_user, 9.0);
+    CHECK_NEAR(out.cpu_sys, 4.0);
+    CHECK(out.read_bytes == 100); /* the IO series still continues */
+}
+
 void test_metrics(void) {
     test_parse_stat_basic();
     test_parse_stat_malformed();
@@ -394,6 +438,10 @@ void test_metrics(void) {
     test_retire_recycled_pid();
     test_retire_first_sample();
     test_retire_whole_tree_exited();
+    test_final_counters_no_samples();
+    test_final_counters_continue_io_series();
+    test_final_counters_io_never_sampled();
+    test_final_counters_rusage_wins_on_cpu();
     test_cumulative_adds_retired();
     test_cumulative_floor_holds();
     test_cumulative_floor_does_not_cap();
