@@ -256,6 +256,28 @@ typedef struct {
 kotlp_counters kotlp_cumulative(kotlp_counters live, kotlp_counters retired,
                                 kotlp_counters floor);
 
+/* Reconcile the closing rusage summary (`rusage`) with the last cumulative
+ * values the live sampler published (`last`).
+ *
+ * The two flags are NOT the same question. `have_samples` says live sampling
+ * produced records at all; `have_io_samples` says at least one of them actually
+ * read /proc/<pid>/io. A kernel built without CONFIG_TASK_IO_ACCOUNTING, or a
+ * child that drops privileges, samples happily and never yields a single IO
+ * reading - and continuing that empty series would publish a hard 0 where
+ * rusage has a real (if differently-derived) figure.
+ *
+ * The flag is deliberately coarse: "some member, in some sample, was readable".
+ * A tree that is only PARTLY readable therefore publishes the readable subset
+ * rather than rusage's whole-tree figure. That follows the same unit argument -
+ * a partial byte count is still a byte count, where rusage counts block-IO
+ * operations - and it keeps the final record consistent with the series it
+ * continues. `have_io_samples` without `have_samples` cannot occur: one
+ * accumulate() call sets both.
+ *
+ * Pure; exposed for unit testing. */
+kotlp_counters kotlp_final_counters(kotlp_counters rusage, kotlp_counters last,
+                                    bool have_samples, bool have_io_samples);
+
 /* metrics: background sampler. Started/stopped around the child lifetime.
  * `start_ns` is the moment the run began, and becomes the startTimeUnixNano of
  * every cumulative datapoint - live and final - so they all describe the same
