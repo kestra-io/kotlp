@@ -287,6 +287,105 @@ static void test_retire_whole_tree_exited(void) {
     CHECK(wr == 120);
 }
 
+/* Membership at a scale the sampler really reaches (`make -j64` under a short
+ * --interval), checked against the pairwise scan the map replaced. Duplicated
+ * identities, recycled pids and pid 0 are all in the table, since those are what
+ * an open-addressed map gets wrong: a bad hash or a mishandled probe chain would
+ * report a live member as exited and bank its counters twice. */
+static void test_retire_large_tree(void) {
+    enum { N = 4096 };
+    static kotlp_tree_member prev[N];
+    static kotlp_tree_member cur[N];
+    int cur_n = 0;
+    double expect_cu = 0;
+    for (int i = 0; i < N; i++) {
+        /* pid 0 exercises the "no reserved key" property of the slot values. */
+        pid_t pid = (pid_t)(i == 7 ? 0 : i * 3 + 1);
+        prev[i] = tm(pid, 100 + i, (double)i, 0.5, i * 10, i * 20);
+        if (i % 4 == 0) { /* every fourth member exits before the next sample */
+            expect_cu += (double)i;
+            continue;
+        }
+        cur[cur_n++] = (i % 8 == 1)
+                           /* same pid, new starttime: the number was recycled,
+                            * so the old member is gone and must be retired */
+                           ? tm(pid, 900000 + i, 0.01, 0.0, 1, 1)
+                           : tm(pid, 100 + i, (double)i + 1.0, 0.6, i * 11,
+                                i * 21);
+        if (i % 8 == 1) expect_cu += (double)i;
+    }
+    /* a duplicate identity in `cur` must not change any answer */
+    cur[cur_n] = cur[0];
+    cur_n++;
+
+    double cu = 0, cs = 0;
+    long long rd = 0, wr = 0;
+    kotlp_retire_exited(prev, N, cur, cur_n, &cu, &cs, &rd, &wr);
+    CHECK_NEAR(cu, expect_cu);
+
+    /* and all four totals match what the O(prev_n x cur_n) scan would bank */
+    double ref_cu = 0, ref_cs = 0;
+    long long ref_rd = 0, ref_wr = 0;
+    for (int i = 0; i < N; i++) {
+        bool alive = false;
+        for (int j = 0; j < cur_n && !alive; j++)
+            alive = prev[i].pid == cur[j].pid &&
+                    prev[i].starttime_ticks == cur[j].starttime_ticks;
+        if (alive) continue;
+        ref_cu += prev[i].cpu_user;
+        ref_cs += prev[i].cpu_sys;
+        ref_rd += prev[i].read_bytes;
+        ref_wr += prev[i].write_bytes;
+    }
+    CHECK_NEAR(cu, ref_cu);
+    CHECK_NEAR(cs, ref_cs);
+    CHECK(rd == ref_rd);
+    CHECK(wr == ref_wr);
+}
+
+/* Time `rounds` retirements of an n-member tree in which nothing exited, so
+ * every lookup has to probe and hit. */
+static uint64_t time_retirements(int n, int rounds) {
+    enum { MAXN = 4096 };
+    static kotlp_tree_member prev[MAXN];
+    static kotlp_tree_member cur[MAXN];
+    for (int i = 0; i < n; i++) {
+        prev[i] = tm((pid_t)(i + 1), 100 + i, 1.0, 0.5, 10, 20);
+        cur[i] = prev[i];
+    }
+    double cu = 0, cs = 0;
+    long long rd = 0, wr = 0;
+    uint64_t t0 = kotlp_now_mono_ms();
+    for (int r = 0; r < rounds; r++)
+        kotlp_retire_exited(prev, n, cur, n, &cu, &cs, &rd, &wr);
+    uint64_t elapsed = kotlp_now_mono_ms() - t0;
+    CHECK_NEAR(cu, 0.0); /* nothing exited, so nothing was banked */
+    return elapsed;
+}
+
+/* The cost shape, not a benchmark. Retirement used to be O(prev_n x cur_n) per
+ * sample - the same quadratic item 4 removed from tree marking, just keyed on
+ * tree size instead of host size, so a wide fan-out (`kotlp -i 100 -- make
+ * -j64`) put millions of comparisons in every interval.
+ *
+ * What is asserted is the RATIO between two tree sizes, not a wall-clock budget:
+ * a budget would encode how fast this machine is and could flake on a throttled
+ * CI runner. Measured here at 8x the members: 4.6x linear, 56x pairwise. */
+static void test_retire_is_not_quadratic(void) {
+    enum { SMALL = 512, BIG = 4096, ROUNDS = 2000, MAX_RATIO = 20 };
+    uint64_t t_small = time_retirements(SMALL, ROUNDS);
+    uint64_t t_big = time_retirements(BIG, ROUNDS);
+    /* Floor the divisor: the clock is millisecond-resolution, and a fast
+     * machine can finish the small case in near-zero time. */
+    if (t_small < 4) t_small = 4;
+    CHECK(t_big <= t_small * MAX_RATIO);
+    if (t_big > t_small * MAX_RATIO)
+        fprintf(stderr,
+                "    (%d retirements: %d members %llu ms, %d members %llu ms)\n",
+                (int)ROUNDS, (int)SMALL, (unsigned long long)t_small, (int)BIG,
+                (unsigned long long)t_big);
+}
+
 static kotlp_counters ctr(double cu, double cs, long long rd, long long wr) {
     kotlp_counters c;
     c.cpu_user = cu;
@@ -438,6 +537,8 @@ void test_metrics(void) {
     test_retire_recycled_pid();
     test_retire_first_sample();
     test_retire_whole_tree_exited();
+    test_retire_large_tree();
+    test_retire_is_not_quadratic();
     test_final_counters_no_samples();
     test_final_counters_continue_io_series();
     test_final_counters_io_never_sampled();
