@@ -253,12 +253,17 @@ static void handle_conn(trace_receiver *t, int fd) {
         }
         if (out.len > 0) otel_emit(STDOUT_FILENO, &out);
         sb_free(&out);
-    } else if (header_end >= 0) {
+    } else if (header_end >= 0 && content_length != 0) {
         /* Headers arrived but nothing was forwarded: either the promised body
          * never fully turned up, or there was no Content-Length to delimit one
          * (a chunked encoding, which is not decoded here). Dropping it while
          * answering 200 OK made a lost export indistinguishable from a
-         * delivered one. */
+         * delivered one.
+         *
+         * `Content-Length: 0` is deliberately not in here. An empty POST - a
+         * bare `curl -X POST`, an SDK flushing an empty batch, a liveness probe
+         * - is a successful export of nothing, not a dropped payload, and
+         * logging one wrote a spurious error line to kotlp's stderr. */
         long have_body = (long)req.len - body_start;
         if (have_body < 0) have_body = 0;
         if (content_length > 0) {
@@ -268,7 +273,7 @@ static void handle_conn(trace_receiver *t, int fd) {
                     have_body, content_length,
                     timed_out ? ", timed out"
                               : capped ? ", over the size cap" : "");
-        } else {
+        } else { /* content_length < 0: the header was absent altogether */
             fprintf(stderr,
                     "kotlp: trace receiver dropped a %ld-byte payload with no "
                     "usable Content-Length\n",
