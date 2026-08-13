@@ -33,10 +33,27 @@ def requireApeBinary = tasks.register('requireApeBinary') {
     }
 }
 
+// Ships next to the binary so a built distribution can still say which kotlp it embeds — once a
+// consumer's fat jar merges this artifact, the jar filename is gone and this file is the only
+// record left. `unzip -p <dist>.jar kotlp/kotlp.version`.
+def versionMarker = tasks.register('versionMarker') {
+    def marker = layout.buildDirectory.file('kotlp.version')
+    def value = version.toString()
+    inputs.property('version', value)
+    outputs.file(marker)
+    doLast {
+        marker.get().asFile.text = value
+    }
+}
+
 jar {
     dependsOn requireApeBinary
-    // Must stay at kotlp/kotlp: that is the classpath resource path consumers read.
+    // Must stay at kotlp/kotlp and kotlp/kotlp.version: those are the classpath resource paths
+    // consumers read.
     from(apeBinary) {
+        into 'kotlp'
+    }
+    from(versionMarker) {
         into 'kotlp'
     }
 }
