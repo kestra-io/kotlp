@@ -68,12 +68,14 @@ jobs:
           cache: gradle
 
       - name: Publish - Prepare
-        run: |
-          mkdir -p ~/.gradle
-          echo "ORG_GRADLE_PROJECT_version=${GITHUB_REF_NAME#v}" >> "$GITHUB_ENV"
+        run: echo "ORG_GRADLE_PROJECT_version=${GITHUB_REF_NAME#v}" >> "$GITHUB_ENV"
 
       - name: Publish - Maven Central
         uses: kestra-io/actions/composite/publish-java@main
         with:
-          secrets: ${{ toJSON(secrets) }}
           is-private: 'false'
+          sonatype-user: ${{ secrets.SONATYPE_USER }}
+          sonatype-password: ${{ secrets.SONATYPE_PASSWORD }}
+          sonatype-gpg-keyid: ${{ secrets.SONATYPE_GPG_KEYID }}
+          sonatype-gpg-password: ${{ secrets.SONATYPE_GPG_PASSWORD }}
+          sonatype-gpg-file: ${{ secrets.SONATYPE_GPG_FILE }}
