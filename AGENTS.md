@@ -77,7 +77,15 @@ CI (`.github/workflows/ci.yml`) builds with `cosmocc`, runs the unit tests and
 the smoke test on Linux, then re-runs the *same* `test-unit` APE and the smoke
 test on macOS (Intel + arm64). Releases (`.github/workflows/release.yml`) gate
 on both test layers before building the APE on a `v*` tag and attaching the
-single binary + SHA-256 to a GitHub Release.
+single binary + SHA-256 to a GitHub Release, then publish the same binary to
+Maven Central as `io.kestra:kotlp` (see `build.gradle`) for JVM consumers.
+
+The Gradle build is packaging only — it never compiles anything, it wraps the
+`make` output. Two constraints it depends on: the binary must already exist at
+`build/kotlp` (the `requireApeBinary` task fails with that instruction
+otherwise), and Gradle's own output goes to `build/gradle/` so `gradle clean`
+cannot wipe the Makefile's `build/kotlp` or the cached `build/cosmocc/`
+toolchain.
 
 ## Code map
 
@@ -126,3 +134,7 @@ single binary + SHA-256 to a GitHub Release.
   summary at exit. Preserve that fallback when editing `src/metrics.c`.
 - The metrics sampler and trace receiver are background `pthread`s tied to the
   child lifetime — always `*_stop()` them before emitting the final records.
+- **`kotlp/kotlp` inside the published jar is a consumer contract**, not an
+  implementation detail: kestra reads the binary as the classpath resource
+  `/kotlp/kotlp`. Renaming that entry (or adding a classifier) silently breaks
+  every consumer at runtime, not at build time.

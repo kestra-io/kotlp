@@ -1,6 +1,9 @@
 # build artifacts
 /build/
 
+# gradle (packaging/publishing only; its outputs go to build/gradle/)
+/.gradle/
+
 # editor / OS noise
 *.o
 *.dbg

@@ -249,6 +249,29 @@ accounts for every reaped descendant.
 On the other platforms `kotlp` still emits an authoritative usage summary from
 `wait4()`/`getrusage()` when the child exits (CPU time, peak RSS, block IO).
 
+## Using it from the JVM
+
+Every release also publishes the same binary to Maven Central as
+`io.kestra:kotlp`, so JVM projects can depend on it instead of downloading the
+release asset themselves:
+
+```groovy
+implementation 'io.kestra:kotlp:0.1.0'
+```
+
+The jar carries no classes — just the APE at the classpath resource path
+`/kotlp/kotlp`, which is a stable contract:
+
+```java
+try (InputStream binary = MyClass.class.getResourceAsStream("/kotlp/kotlp")) {
+    Files.copy(binary, destination, StandardCopyOption.REPLACE_EXISTING);
+}
+// then mark it executable; name it kotlp.exe on Windows (same bytes)
+```
+
+Resolving it as a dependency means the build tool handles caching, checksums and
+retries, and the artifact is available offline once cached.
+
 ## Building
 
 `make` uses `cosmocc` if it is on your `PATH`; otherwise it downloads the

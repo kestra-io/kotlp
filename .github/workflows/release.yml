@@ -45,7 +45,39 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create "${GITHUB_REF_NAME}" \
-            --title "kotlp ${GITHUB_REF_NAME}" \
-            --generate-notes \
-            dist/kotlp dist/kotlp.exe dist/SHA256SUMS
+          # Re-runnable: if the release already exists (e.g. the Maven publish below failed and the
+          # job is being retried), refresh its assets instead of failing before reaching that step.
+          if gh release view "${GITHUB_REF_NAME}" >/dev/null 2>&1; then
+            gh release upload "${GITHUB_REF_NAME}" --clobber \
+              dist/kotlp dist/kotlp.exe dist/SHA256SUMS
+          else
+            gh release create "${GITHUB_REF_NAME}" \
+              --title "kotlp ${GITHUB_REF_NAME}" \
+              --generate-notes \
+              dist/kotlp dist/kotlp.exe dist/SHA256SUMS
+          fi
+
+      # Maven Central: the same binary, wrapped in io.kestra:kotlp so JVM consumers resolve it as an
+      # ordinary dependency (cached, checksummed, retried by Gradle) instead of fetching the release
+      # asset over plain HTTP at build time.
+      - name: Setup - JDK
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: 25
+          cache: gradle
+
+      - name: Publish - Maven Central
+        env:
+          ORG_GRADLE_PROJECT_mavenCentralUsername: ${{ secrets.SONATYPE_USER }}
+          ORG_GRADLE_PROJECT_mavenCentralPassword: ${{ secrets.SONATYPE_PASSWORD }}
+          SONATYPE_GPG_KEYID: ${{ secrets.SONATYPE_GPG_KEYID }}
+          SONATYPE_GPG_PASSWORD: ${{ secrets.SONATYPE_GPG_PASSWORD }}
+          SONATYPE_GPG_FILE: ${{ secrets.SONATYPE_GPG_FILE }}
+        run: |
+          mkdir -p ~/.gradle/
+          echo "signing.keyId=${SONATYPE_GPG_KEYID}" > ~/.gradle/gradle.properties
+          echo "signing.password=${SONATYPE_GPG_PASSWORD}" >> ~/.gradle/gradle.properties
+          echo "signing.secretKeyRingFile=${HOME}/.gradle/secring.gpg" >> ~/.gradle/gradle.properties
+          echo "${SONATYPE_GPG_FILE}" | base64 -d > ~/.gradle/secring.gpg
+          ./gradlew publishToMavenCentral -Pversion="${GITHUB_REF_NAME#v}"

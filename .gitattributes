@@ -1,0 +1,2 @@
+# The Gradle wrapper batch script must keep CRLF endings to run on Windows.
+*.bat text eol=crlf
