@@ -1,0 +1,109 @@
+// Packaging only: the binary is built by the Makefile (`make`), and this build wraps the resulting
+// APE into a Maven artifact published as io.kestra:kotlp. Consumers (kestra's :script module) then
+// resolve it as an ordinary Gradle dependency and read it off the classpath as `/kotlp/kotlp`,
+// instead of downloading the GitHub release asset over plain HTTP at build time.
+plugins {
+    id 'java-library'
+    id 'signing'
+    id 'com.vanniktech.maven.publish' version '0.37.0'
+}
+
+group = 'io.kestra'
+// The release workflow passes -Pversion=<tag without the leading v>; keep dev builds obvious.
+version = project.hasProperty('version') && project.version != 'unspecified' ? project.version : '0.0.0-SNAPSHOT'
+
+repositories {
+    mavenCentral()
+}
+
+// The Makefile owns ./build (build/kotlp, build/obj, build/cosmocc), so keep Gradle out of it —
+// otherwise `gradle clean` would wipe the compiled binary and the cached cosmocc toolchain.
+layout.buildDirectory = layout.projectDirectory.dir('build/gradle')
+
+def apeBinary = layout.projectDirectory.file('build/kotlp')
+
+// The jar carries no classes — only the binary — so fail loudly rather than publishing an empty
+// artifact when the Makefile has not run yet.
+def requireApeBinary = tasks.register('requireApeBinary') {
+    def binary = apeBinary
+    doLast {
+        if (!binary.asFile.exists()) {
+            throw new GradleException("Cannot package kotlp: '%s' does not exist. Run 'make' first.".formatted(binary.asFile))
+        }
+    }
+}
+
+// Ships next to the binary so a built distribution can still say which kotlp it embeds — once a
+// consumer's fat jar merges this artifact, the jar filename is gone and this file is the only
+// record left. `unzip -p <dist>.jar kotlp/kotlp.version`.
+def versionMarker = tasks.register('versionMarker') {
+    def marker = layout.buildDirectory.file('kotlp.version')
+    def value = version.toString()
+    inputs.property('version', value)
+    outputs.file(marker)
+    doLast {
+        marker.get().asFile.text = value
+    }
+}
+
+jar {
+    dependsOn requireApeBinary
+    // Must stay at kotlp/kotlp and kotlp/kotlp.version: those are the classpath resource paths
+    // consumers read.
+    from(apeBinary) {
+        into 'kotlp'
+    }
+    from(versionMarker) {
+        into 'kotlp'
+    }
+}
+
+// There are no Java sources to ship, so the sources jar carries the C sources the binary was built
+// from, which is what someone inspecting the artifact actually wants.
+java {
+    withSourcesJar()
+}
+
+tasks.named('sourcesJar', Jar) {
+    from('src') { into 'src' }
+    from('include') { into 'include' }
+    from('Makefile')
+    from('LICENSE')
+}
+
+mavenPublishing {
+    // JavadocJar.Empty(): a C project has no javadoc, but Maven Central requires the artifact.
+    configure(new com.vanniktech.maven.publish.JavaLibrary(new com.vanniktech.maven.publish.JavadocJar.Empty(), true))
+    publishToMavenCentral(true)
+
+    // Signing keys only exist in CI; without this guard `publishToMavenLocal` cannot run locally.
+    if (project.hasProperty('signing.keyId')) {
+        signAllPublications()
+    }
+
+    coordinates(group.toString(), 'kotlp', version.toString())
+
+    pom {
+        name = 'kotlp'
+        description = 'Portable OpenTelemetry process wrapper, shipped as a single Actually Portable Executable.'
+        url = 'https://github.com/kestra-io/kotlp'
+
+        licenses {
+            license {
+                name = 'MIT License'
+                url = 'https://github.com/kestra-io/kotlp/blob/main/LICENSE'
+            }
+        }
+        developers {
+            developer {
+                id = 'tchiotludo'
+                name = 'Ludovic Dehon'
+                email = 'ldehon@kestra.io'
+            }
+        }
+        scm {
+            connection = 'scm:git:'
+            url = 'https://github.com/kestra-io/kotlp'
+        }
+    }
+}
