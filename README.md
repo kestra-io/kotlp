@@ -342,4 +342,4 @@ See [AGENTS.md](AGENTS.md) for contributor and AI-agent guidance.
 
 ## License
 
-[MIT](LICENSE) © 2026 Ludovic DEHON
+[Apache License 2.0](LICENSE)
