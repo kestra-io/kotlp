@@ -1,5 +1,6 @@
 /* otel.c - shared OpenTelemetry/OTLP JSON building blocks and console sink. */
 #include "kotlp.h"
+#include <errno.h>
 
 #include <pthread.h>
 #include <stdio.h>
@@ -20,13 +21,15 @@ void otel_emit_init(bool wrap_otel, bool console_quiet) {
     pthread_mutex_init(&g_out_mu, NULL);
 }
 
-void kotlp_full_write(int fd, const char *data, size_t len) {
+bool kotlp_full_write(int fd, const char *data, size_t len) {
     size_t off = 0;
     while (off < len) {
         ssize_t w = write(fd, data + off, len - off);
-        if (w <= 0) break;
+        if (w < 0 && errno == EINTR) continue;
+        if (w <= 0) return false;
         off += (size_t)w;
     }
+    return true;
 }
 
 void otel_emit(int fd, const sb *s) {
