@@ -117,8 +117,10 @@ void otel_emit_raw(int fd, const char *data, size_t len);
  * silences otel_emit()'s console side (used when --log-dir is set, so the
  * console shows plain output instead of duplicating the file's OTLP JSON). */
 void otel_emit_init(bool wrap_otel, bool console_quiet);
-/* write() the whole buffer, retrying short writes. */
-void kotlp_full_write(int fd, const char *data, size_t len);
+/* write() the whole buffer, retrying short writes and EINTR. Returns false as
+ * soon as write() fails for any other reason (errno is left set), so a sink
+ * that must not lose records silently can notice. */
+bool kotlp_full_write(int fd, const char *data, size_t len);
 
 /* ---------------------------------------------------------------- file sink */
 

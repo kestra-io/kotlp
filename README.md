@@ -155,6 +155,13 @@ produced, and lands in the last of them:
 { "key": "kotlp.log.file.count", "value": { "intValue": "3" } }
 ```
 
+If the directory misbehaves mid-run (a FUSE mount such as gcsfuse returning a
+transient error, a full or read-only directory), `kotlp` does not go quiet: a
+rotation whose `open()` fails keeps writing to the current file and retries on
+the next record, a failing `write()` is retried a few times before the record is
+dropped, and `fsync()`/`close()` errors are reported on stderr. Each failure
+kind is reported once per run.
+
 That attribute is only present when `--log-flush-interval` is used;
 `--log-flush-interval` requires `--log-dir`.
 
