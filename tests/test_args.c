@@ -235,6 +235,31 @@ static void test_log_options_missing_arg(void) {
     CHECK(parse_args(4, interval, &cfg) == -1);
 }
 
+/* --log-dir-probe: off by default, on with the flag, requires --log-dir. */
+static void test_log_dir_probe_default_off(void) {
+    clear_env();
+    char *argv[] = {"kotlp", "--log-dir", "/tmp/kotlp-logs", "echo", NULL};
+    kotlp_config cfg;
+    CHECK(parse_args(4, argv, &cfg) == 0);
+    CHECK(cfg.log_dir_probe == false);
+}
+
+static void test_log_dir_probe(void) {
+    clear_env();
+    char *argv[] = {"kotlp", "--log-dir", "/tmp/kotlp-logs", "--log-dir-probe",
+                    "echo", NULL};
+    kotlp_config cfg;
+    CHECK(parse_args(5, argv, &cfg) == 0);
+    CHECK(cfg.log_dir_probe == true);
+}
+
+static void test_log_dir_probe_requires_dir(void) {
+    clear_env();
+    char *argv[] = {"kotlp", "--log-dir-probe", "echo", NULL};
+    kotlp_config cfg;
+    CHECK(parse_args(3, argv, &cfg) == -1);
+}
+
 void test_args(void) {
     test_defaults();
     test_individual_disable_flags();
@@ -257,4 +282,7 @@ void test_args(void) {
     test_log_flush_interval_requires_dir();
     test_log_flush_interval_invalid();
     test_log_options_missing_arg();
+    test_log_dir_probe_default_off();
+    test_log_dir_probe();
+    test_log_dir_probe_requires_dir();
 }

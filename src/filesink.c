@@ -21,6 +21,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
 #include <unistd.h>
@@ -34,6 +35,11 @@ static int g_count;              /* files created so far */
 static bool g_sealed;
 static bool g_warned_open;       /* one stderr line per failure kind, not one per record */
 static bool g_warned_write;
+static bool g_last_write_ok = true; /* outcome of the most recent filesink_write() */
+static bool g_had_failure;       /* sticky: a dropped record, or a sealed chunk that
+                                  * failed fsync()/close() - see filesink_had_failure() */
+static long long *g_sizes;       /* bytes written to each file, in creation order */
+static int g_sizes_cap;
 
 /* A FUSE-backed --log-dir (Cloud Run + gcsfuse, s3fs, ...) turns a network
  * error into a failing open()/write()/fsync(). One record-level retry with a
@@ -106,17 +112,31 @@ static void adopt(int fd) {
     g_fd = fd;
     g_file_start_ns = kotlp_now_unix_nano();
     g_count++;
+    if (g_count > g_sizes_cap) {
+        int new_cap = g_sizes_cap ? g_sizes_cap * 2 : 4;
+        long long *grown = realloc(g_sizes, (size_t)new_cap * sizeof(*grown));
+        if (grown) {
+            g_sizes = grown;
+            g_sizes_cap = new_cap;
+        }
+    }
+    if (g_count <= g_sizes_cap) g_sizes[g_count - 1] = 0;
 }
 
 /* fsync() + close(), each checked. fsync is what makes a FUSE mount upload
  * the file, so an error here is the one chance to see a lost chunk; it is
  * retried a few times, then reported. Filesystems that do not support fsync
- * (EINVAL/ENOSYS/EROFS on pipes and some pseudo-fs) are not an error. */
-static void close_checked(int fd) {
+ * (EINVAL/ENOSYS/EROFS on pipes and some pseudo-fs) are not an error.
+ * Returns false (and sets g_had_failure) once either step could not be
+ * confirmed: whether this was a mid-run rotation or the final close, the file
+ * being sealed here may be missing bytes on disk. */
+static bool close_checked(int fd) {
+    bool ok = true;
     for (int i = 0; i < SINK_RETRIES; i++) {
         if (fsync(fd) == 0 || errno == EINVAL || errno == ENOSYS || errno == EROFS) break;
         if (i == SINK_RETRIES - 1) {
             fprintf(stderr, "kotlp: fsync of log file failed: %s\n", strerror(errno));
+            ok = false;
             break;
         }
         usleep(SINK_RETRY_PAUSE_US);
@@ -124,8 +144,102 @@ static void close_checked(int fd) {
     while (close(fd) != 0) {
         if (errno == EINTR) continue;
         fprintf(stderr, "kotlp: close of log file failed: %s\n", strerror(errno));
+        ok = false;
         break;
     }
+    if (!ok) g_had_failure = true;
+    return ok;
+}
+
+/* --log-dir-probe: before touching the real log files, prove the directory is
+ * both writable AND overwritable. On gcsfuse a runtime service account holding
+ * only storage.objectCreator can create an object but never overwrite it, so
+ * a plain open()/write()/close() of log-1.ndjson succeeds even though every
+ * later rotation and the final close (both overwrite-shaped on that mount)
+ * are doomed. Reproducing that shape - create, then reopen with O_TRUNC, then
+ * read back - catches it at startup instead of after the child has already
+ * run to completion. */
+static bool probe_dir(const char *dir) {
+    sb path;
+    sb_init(&path);
+    sb_puts(&path, dir);
+    size_t n = strlen(dir);
+    if (n == 0 || dir[n - 1] != '/') sb_putc(&path, '/');
+    sb_puts(&path, ".kotlp-probe");
+
+    const char *first = "kotlp-probe-1\n";
+    const char *second = "kotlp-probe-2\n";
+    bool ok = false;
+
+    int fd = open(path.buf, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0644);
+    if (fd < 0) {
+        fprintf(stderr, "kotlp: --log-dir-probe: cannot create '%s': %s\n",
+                path.buf, strerror(errno));
+        goto done;
+    }
+    if (!kotlp_full_write(fd, first, strlen(first))) {
+        fprintf(stderr, "kotlp: --log-dir-probe: write to '%s' failed: %s\n",
+                path.buf, strerror(errno));
+        close(fd);
+        goto done;
+    }
+    if (!close_checked(fd)) {
+        fprintf(stderr,
+                "kotlp: --log-dir-probe: '%s' could not be closed/synced\n",
+                path.buf);
+        goto done;
+    }
+
+    /* Reopen with O_TRUNC: this is the overwrite a rotation or the final
+     * close performs, and the step objectCreator-only credentials fail. */
+    fd = open(path.buf, O_WRONLY | O_TRUNC | O_CLOEXEC, 0644);
+    if (fd < 0) {
+        fprintf(stderr,
+                "kotlp: --log-dir-probe: cannot reopen/overwrite '%s': %s\n",
+                path.buf, strerror(errno));
+        goto done;
+    }
+    if (!kotlp_full_write(fd, second, strlen(second))) {
+        fprintf(stderr,
+                "kotlp: --log-dir-probe: overwrite of '%s' failed: %s\n",
+                path.buf, strerror(errno));
+        close(fd);
+        goto done;
+    }
+    if (!close_checked(fd)) {
+        fprintf(stderr,
+                "kotlp: --log-dir-probe: '%s' could not be closed/synced after "
+                "the overwrite\n",
+                path.buf);
+        goto done;
+    }
+
+    fd = open(path.buf, O_RDONLY | O_CLOEXEC);
+    if (fd < 0) {
+        fprintf(stderr, "kotlp: --log-dir-probe: cannot reopen '%s' for "
+                        "read-back: %s\n",
+                path.buf, strerror(errno));
+        goto done;
+    }
+    char buf[32] = {0};
+    ssize_t r = read(fd, buf, sizeof(buf) - 1);
+    close(fd);
+    if (r < 0 || strcmp(buf, second) != 0) {
+        fprintf(stderr,
+                "kotlp: --log-dir-probe: read-back of '%s' did not match what "
+                "was written - the mount is not reliably overwritable\n",
+                path.buf);
+        goto done;
+    }
+
+    ok = true;
+done:
+    unlink(path.buf);
+    /* close_checked() above may have set g_had_failure; harmless, since a
+     * failed probe makes filesink_open() return false and main() exits
+     * immediately, before filesink_had_failure() would ever be consulted. */
+    sb_free(&path);
+    return ok;
 }
 
 bool filesink_open(const kotlp_config *cfg) {
@@ -139,11 +253,18 @@ bool filesink_open(const kotlp_config *cfg) {
 
     g_warned_open = false;
     g_warned_write = false;
+    g_last_write_ok = true;
+    g_had_failure = false;
+    free(g_sizes);
+    g_sizes = NULL;
+    g_sizes_cap = 0;
+
     if (kotlp_mkdir_p(g_dir) != 0) {
         fprintf(stderr, "kotlp: cannot create log dir '%s': %s\n", g_dir,
                 strerror(errno));
         return false;
     }
+    if (cfg->log_dir_probe && !probe_dir(g_dir)) return false;
     int fd = open_index(g_index, false);
     if (fd < 0) return false;
     adopt(fd);
@@ -155,9 +276,13 @@ bool filesink_open(const kotlp_config *cfg) {
  * whole run rather than one per record. */
 static bool write_record(const char *json, size_t len) {
     for (int i = 0; i < SINK_RETRIES; i++) {
-        if (kotlp_full_write(g_fd, json, len) && kotlp_full_write(g_fd, "\n", 1)) return true;
+        if (kotlp_full_write(g_fd, json, len) && kotlp_full_write(g_fd, "\n", 1)) {
+            if (g_count - 1 < g_sizes_cap) g_sizes[g_count - 1] += (long long)(len + 1);
+            return true;
+        }
         if (i < SINK_RETRIES - 1) usleep(SINK_RETRY_PAUSE_US);
     }
+    g_had_failure = true;
     if (!g_warned_write) {
         g_warned_write = true;
         fprintf(stderr, "kotlp: write to log file failed, records may be lost: %s\n",
@@ -166,8 +291,8 @@ static bool write_record(const char *json, size_t len) {
     return false;
 }
 
-void filesink_write(const char *json, size_t len) {
-    if (g_fd < 0) return;
+bool filesink_write(const char *json, size_t len) {
+    if (g_fd < 0) return true; /* sink disabled: nothing to drop */
 
     if (!g_sealed && g_interval_s > 0) {
         uint64_t now = kotlp_now_unix_nano();
@@ -192,12 +317,24 @@ void filesink_write(const char *json, size_t len) {
         }
     }
 
-    write_record(json, len);
+    g_last_write_ok = write_record(json, len);
+    return g_last_write_ok;
 }
 
 void filesink_seal(void) { g_sealed = true; }
 
 int filesink_file_count(void) { return g_count; }
+
+void filesink_file_sizes(sb *out) {
+    for (int i = 0; i < g_count && i < g_sizes_cap; i++) {
+        if (i) sb_putc(out, ',');
+        sb_putf(out, "%lld", g_sizes[i]);
+    }
+}
+
+bool filesink_last_write_ok(void) { return g_last_write_ok; }
+
+bool filesink_had_failure(void) { return g_had_failure; }
 
 void filesink_close(void) {
     if (g_fd < 0) return;

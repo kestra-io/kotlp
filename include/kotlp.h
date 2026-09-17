@@ -47,6 +47,8 @@ typedef struct {
                                * into this directory; NULL = console only     */
     long log_flush_interval_s;/* rotate the log dir file every N seconds;
                                * 0 = a single log.ndjson, no rotation         */
+    bool log_dir_probe;       /* verify --log-dir is actually writable AND
+                               * overwritable before doing anything else      */
 } kotlp_config;
 
 /* --------------------------------------------------------------- cli args  */
@@ -121,6 +123,13 @@ void otel_emit_init(bool wrap_otel, bool console_quiet);
  * soon as write() fails for any other reason (errno is left set), so a sink
  * that must not lose records silently can notice. */
 bool kotlp_full_write(int fd, const char *data, size_t len);
+/* Write one record straight to the console, bypassing otel_emit_init's
+ * console_quiet (used when --log-dir suppresses the console side). Never
+ * tees to the file sink - the caller already tried that path. Used only for
+ * the terminal root span, as a fallback when the file sink could not take
+ * it: otherwise a --log-dir consumer that never sees a root span cannot tell
+ * a lost chunk from a killed process. */
+void otel_emit_force_console(int fd, const sb *s);
 
 /* ---------------------------------------------------------------- file sink */
 
@@ -135,13 +144,33 @@ bool kotlp_full_write(int fd, const char *data, size_t len);
  * cannot be created. */
 bool filesink_open(const kotlp_config *cfg);
 /* Append one record. Called from otel_emit() with its console mutex already
- * held, so this never locks (and must not be called from anywhere else). */
-void filesink_write(const char *json, size_t len);
+ * held, so this never locks (and must not be called from anywhere else).
+ * Returns false if the record was dropped (write() kept failing after
+ * retries) - see otel_emit_force_console for why that return value matters
+ * for the root span specifically. */
+bool filesink_write(const char *json, size_t len);
 /* Stop rotating, so the final metrics/root-span records land in the last file
  * and filesink_file_count() stays stable while they are built. */
 void filesink_seal(void);
 /* Number of files created so far (0 when the sink is disabled). */
 int filesink_file_count(void);
+/* Byte size of every file created so far (including the one still open),
+ * comma-separated in creation order, appended to `out`. A consumer can sum
+ * these against what actually landed on disk to catch a chunk truncated by a
+ * failed fsync/close - kotlp.log.file.count alone only proves the sequence is
+ * gap-free, not that each file is complete. Empty when the sink is disabled. */
+void filesink_file_sizes(sb *out);
+/* Outcome of the most recent filesink_write() call (true when the sink is
+ * disabled). Distinct from filesink_had_failure(): this is not sticky, so a
+ * caller can check whether the record it just emitted specifically made it
+ * to disk - used by traces_emit_root_span to decide whether the terminal
+ * span also needs a console fallback. */
+bool filesink_last_write_ok(void);
+/* True once this run had at least one record dropped after retries, or a
+ * sealed chunk (rotation or the final close) that failed fsync()/close().
+ * Either means some bytes never reached disk; main() turns this into a
+ * non-zero exit so a consumer trusting the exit code alone still sees it. */
+bool filesink_had_failure(void);
 void filesink_close(void);
 
 /* Write the file name for rotation index `i` into `out`: i <= 0 yields

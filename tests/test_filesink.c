@@ -160,6 +160,136 @@ static void test_rotation_failure_keeps_current_file(void) {
     rmdir(dir);
 }
 
+/* filesink_file_sizes(): a single, unrotated file accumulates one running
+ * byte count as records land in it. */
+static void test_file_sizes_single_file(void) {
+    char dir[512];
+    snprintf(dir, sizeof(dir), "%s/kotlp-test-sizes-single", tmp_base());
+    char f[540];
+    snprintf(f, sizeof(f), "%s/log.ndjson", dir);
+    unlink(f);
+    rmdir(dir);
+
+    kotlp_config cfg;
+    memset(&cfg, 0, sizeof(cfg));
+    cfg.log_dir = dir;
+    CHECK(filesink_open(&cfg));
+    CHECK(filesink_write("abc", 3));  /* 3 + trailing '\n' = 4 bytes */
+    CHECK(filesink_write("de", 2));   /* 2 + trailing '\n' = 3 bytes */
+
+    sb sizes;
+    sb_init(&sizes);
+    filesink_file_sizes(&sizes);
+    CHECK_STR_EQ(sizes.buf, "7");
+    sb_free(&sizes);
+
+    filesink_seal();
+    filesink_close();
+    unlink(f);
+    rmdir(dir);
+}
+
+/* filesink_file_sizes(): one rotated-away file keeps its final size, the file
+ * that succeeds it keeps its own, independently. */
+static void test_file_sizes_rotated(void) {
+    char dir[512], f1[540], f2[540];
+    snprintf(dir, sizeof(dir), "%s/kotlp-test-sizes-rotated", tmp_base());
+    snprintf(f1, sizeof(f1), "%s/log-1.ndjson", dir);
+    snprintf(f2, sizeof(f2), "%s/log-2.ndjson", dir);
+    unlink(f1);
+    unlink(f2);
+    rmdir(dir);
+
+    kotlp_config cfg;
+    memset(&cfg, 0, sizeof(cfg));
+    cfg.log_dir = dir;
+    cfg.log_flush_interval_s = 1;
+    CHECK(filesink_open(&cfg));
+    CHECK(filesink_write("abc", 3)); /* 4 bytes into log-1 */
+    usleep(1100 * 1000);
+    CHECK(filesink_write("de", 2)); /* rotation, then 3 bytes into log-2 */
+    CHECK(filesink_file_count() == 2);
+
+    sb sizes;
+    sb_init(&sizes);
+    filesink_file_sizes(&sizes);
+    CHECK_STR_EQ(sizes.buf, "4,3");
+    sb_free(&sizes);
+
+    filesink_seal();
+    filesink_close();
+    unlink(f1);
+    unlink(f2);
+    rmdir(dir);
+}
+
+/* A run with no forced faults must report neither a sticky failure nor a bad
+ * last write. */
+static void test_had_failure_clean_run(void) {
+    char dir[512], f[540];
+    snprintf(dir, sizeof(dir), "%s/kotlp-test-clean", tmp_base());
+    snprintf(f, sizeof(f), "%s/log.ndjson", dir);
+    unlink(f);
+    rmdir(dir);
+
+    kotlp_config cfg;
+    memset(&cfg, 0, sizeof(cfg));
+    cfg.log_dir = dir;
+    CHECK(filesink_open(&cfg));
+    CHECK(filesink_write("ok", 2));
+    CHECK(filesink_last_write_ok());
+    CHECK(!filesink_had_failure());
+
+    filesink_seal();
+    filesink_close();
+    unlink(f);
+    rmdir(dir);
+}
+
+/* --log-dir-probe succeeds on a directory it can actually create-write,
+ * reopen-overwrite and read back from, and leaves no probe file behind. */
+static void test_probe_succeeds_on_writable_dir(void) {
+    char dir[512], probe[540];
+    snprintf(dir, sizeof(dir), "%s/kotlp-test-probe-ok", tmp_base());
+    snprintf(probe, sizeof(probe), "%s/.kotlp-probe", dir);
+    unlink(probe);
+    rmdir(dir);
+
+    kotlp_config cfg;
+    memset(&cfg, 0, sizeof(cfg));
+    cfg.log_dir = dir;
+    cfg.log_dir_probe = true;
+    CHECK(filesink_open(&cfg));
+    CHECK(access(probe, F_OK) != 0); /* cleaned up after the probe */
+
+    filesink_seal();
+    filesink_close();
+    char f[540];
+    snprintf(f, sizeof(f), "%s/log.ndjson", dir);
+    unlink(f);
+    rmdir(dir);
+}
+
+/* --log-dir-probe fails fast on a directory it cannot write to, before ever
+ * opening a real log file. Skipped as root, who ignores modes. */
+static void test_probe_fails_on_unwritable_dir(void) {
+    if (geteuid() == 0) return;
+    char dir[512];
+    snprintf(dir, sizeof(dir), "%s/kotlp-test-probe-fail", tmp_base());
+    rmdir(dir);
+    CHECK(kotlp_mkdir_p(dir) == 0);
+    CHECK(chmod(dir, 0555) == 0);
+
+    kotlp_config cfg;
+    memset(&cfg, 0, sizeof(cfg));
+    cfg.log_dir = dir;
+    cfg.log_dir_probe = true;
+    CHECK(!filesink_open(&cfg));
+
+    chmod(dir, 0755);
+    rmdir(dir);
+}
+
 void test_filesink(void) {
     test_file_name_no_rotation();
     test_file_name_rotated();
@@ -168,4 +298,9 @@ void test_filesink(void) {
     test_mkdir_p_rejects_empty();
     test_full_write_reports_failure();
     test_rotation_failure_keeps_current_file();
+    test_file_sizes_single_file();
+    test_file_sizes_rotated();
+    test_had_failure_clean_run();
+    test_probe_succeeds_on_writable_dir();
+    test_probe_fails_on_unwritable_dir();
 }

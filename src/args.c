@@ -52,6 +52,10 @@ void usage(FILE *f) {
         "                           log-1.ndjson, log-2.ndjson, ... and report\n"
         "                           kotlp.log.file.count on the root span\n"
         "                           (requires --log-dir)\n"
+        "      --log-dir-probe      verify DIR is writable AND overwritable\n"
+        "                           before doing anything else; exits fast with\n"
+        "                           a clear message otherwise (requires\n"
+        "                           --log-dir)\n"
         "  -V, --version            print version and exit\n"
         "  -h, --help               print this help and exit\n");
 }
@@ -68,6 +72,7 @@ int parse_args(int argc, char **argv, kotlp_config *cfg) {
     cfg->otlp_protocol = NULL;
     cfg->log_dir = NULL;
     cfg->log_flush_interval_s = 0;
+    cfg->log_dir_probe = false;
     cfg->argv = NULL;
     cfg->argc = 0;
 
@@ -139,6 +144,8 @@ int parse_args(int argc, char **argv, kotlp_config *cfg) {
                         argv[i]);
                 return -1;
             }
+        } else if (strcmp(a, "--log-dir-probe") == 0) {
+            cfg->log_dir_probe = true;
         } else if (strcmp(a, "-f") == 0 || strcmp(a, "--format") == 0) {
             if (++i >= argc) goto missing;
             if (strcmp(argv[i], "kjson") == 0) {
@@ -165,6 +172,10 @@ int parse_args(int argc, char **argv, kotlp_config *cfg) {
     /* Checked after the loop so the two options may be given in either order. */
     if (cfg->log_flush_interval_s > 0 && !cfg->log_dir) {
         fprintf(stderr, "kotlp: --log-flush-interval requires --log-dir\n");
+        return -1;
+    }
+    if (cfg->log_dir_probe && !cfg->log_dir) {
+        fprintf(stderr, "kotlp: --log-dir-probe requires --log-dir\n");
         return -1;
     }
 
