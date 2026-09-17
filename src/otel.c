@@ -50,6 +50,17 @@ void otel_emit(int fd, const sb *s) {
     pthread_mutex_unlock(&g_out_mu);
 }
 
+void otel_emit_force_console(int fd, const sb *s) {
+    static const char prefix[] = "::{\"otlp\":";
+    static const char suffix[] = "}::";
+    pthread_mutex_lock(&g_out_mu);
+    if (g_wrap_otel) kotlp_full_write(fd, prefix, sizeof(prefix) - 1);
+    kotlp_full_write(fd, s->buf ? s->buf : "", s->len);
+    if (g_wrap_otel) kotlp_full_write(fd, suffix, sizeof(suffix) - 1);
+    kotlp_full_write(fd, "\n", 1);
+    pthread_mutex_unlock(&g_out_mu);
+}
+
 void otel_emit_raw(int fd, const char *data, size_t len) {
     /* Raw child bytes are not OTLP JSON, so they never go to the file sink. */
     pthread_mutex_lock(&g_out_mu);

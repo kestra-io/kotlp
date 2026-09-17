@@ -469,6 +469,20 @@ void traces_emit_root_span(const kotlp_config *cfg, pid_t child_pid,
         sb_putc(&out, ',');
         otel_attr_int(&out, "kotlp.log.file.count", filesink_file_count());
     }
+    /* Per-file byte counts, so a consumer can verify each chunk landed whole
+     * rather than trusting the gap-free sequence alone: kotlp.log.file.count
+     * still matches after a fsync/close failure mid-rotation (the sequence
+     * has no gap), but the sealed chunk itself can be short. Present whenever
+     * --log-dir is set, even without rotation, so the single-file case gets
+     * the same verification. */
+    if (cfg->log_dir) {
+        sb size_list;
+        sb_init(&size_list);
+        filesink_file_sizes(&size_list);
+        sb_putc(&out, ',');
+        otel_attr_str(&out, "kotlp.log.file.sizes", size_list.buf ? size_list.buf : "");
+        sb_free(&size_list);
+    }
     sb_puts(&out, "],\"status\":{");
     if (exit_code == 0 && term_signal == 0) {
         sb_puts(&out, "\"code\":1"); /* STATUS_CODE_OK */
@@ -483,5 +497,16 @@ void traces_emit_root_span(const kotlp_config *cfg, pid_t child_pid,
     }
     sb_puts(&out, "}}]}]}]}");
     otel_emit(STDOUT_FILENO, &out);
+    /* --log-dir suppresses this span on the console (see otel_emit_init):
+     * the file is meant to be the one full copy. But if the file sink just
+     * failed to take this exact record, that copy does not exist either, and
+     * a consumer waiting on the terminal span to know the run finished would
+     * see nothing at all - indistinguishable from a hard kill. Print it to
+     * the console as a fallback so the completion record exists somewhere. */
+    if (cfg->log_dir && !filesink_last_write_ok()) {
+        fprintf(stderr, "kotlp: log sink failed for the terminal root span; "
+                        "emitting it to stdout as well\n");
+        otel_emit_force_console(STDOUT_FILENO, &out);
+    }
     sb_free(&out);
 }

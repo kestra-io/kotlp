@@ -118,5 +118,16 @@ int main(int argc, char **argv) {
 
     filesink_close();
 
+    /* A dropped record, or a sealed chunk (a rotation or this final close)
+     * that failed fsync()/close(), means some bytes never reached disk. The
+     * child's own exit code carries no sign of that, so a consumer trusting
+     * exit-code-zero alone would call this run clean. Only raised when the
+     * child itself succeeded: a signal or non-zero exit already makes the
+     * run visibly failed. */
+    if (cfg.log_dir && filesink_had_failure()) {
+        fprintf(stderr, "kotlp: log file upload failed\n");
+        if (exit_code == 0) exit_code = 1;
+    }
+
     return exit_code;
 }

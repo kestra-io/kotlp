@@ -99,6 +99,9 @@ Options:
                            log-1.ndjson, log-2.ndjson, ... and report
                            kotlp.log.file.count on the root span
                            (requires --log-dir)
+      --log-dir-probe      verify DIR is writable AND overwritable before
+                           doing anything else; exits fast with a clear
+                           message otherwise (requires --log-dir)
   -V, --version            print version and exit
   -h, --help               print help and exit
 ```
@@ -155,22 +158,58 @@ produced, and lands in the last of them:
 { "key": "kotlp.log.file.count", "value": { "intValue": "3" } }
 ```
 
+That attribute is only present when `--log-flush-interval` is used;
+`--log-flush-interval` requires `--log-dir`.
+
+Whenever `--log-dir` is set (with or without rotation), the same span also
+carries each file's byte size, comma-separated in creation order:
+
+```json
+{ "key": "kotlp.log.file.sizes", "value": { "stringValue": "3111,5365" } }
+```
+
+`kotlp.log.file.count` only proves the sequence is gap-free; it says nothing
+about whether a given file is *complete*. A consumer can sum these sizes
+against what actually landed on disk to catch a chunk a failed `fsync()`/
+`close()` left short. The very last entry is taken right before the root span
+itself (and, when metrics are enabled, the final metrics record) are appended
+to that same file, so it always undercounts the file's true final size by
+those few records — the same caveat `kotlp.log.file.count` already carries for
+the file still open when it is computed.
+
 If the directory misbehaves mid-run (a FUSE mount such as gcsfuse returning a
 transient error, a full or read-only directory), `kotlp` does not go quiet: a
 rotation whose `open()` fails keeps writing to the current file and retries on
 the next record, a failing `write()` is retried a few times before the record is
 dropped, and `fsync()`/`close()` errors are reported on stderr. Each failure
-kind is reported once per run.
+kind is reported once per run. If any record was ultimately dropped, or a
+sealed chunk (a rotation or the final close) could not be `fsync()`'d/closed,
+`kotlp` prints `kotlp: log file upload failed` and exits non-zero even when the
+child itself exited 0 — otherwise the wrapper's own exit code would say the
+run was clean when some bytes never reached disk.
 
-That attribute is only present when `--log-flush-interval` is used;
-`--log-flush-interval` requires `--log-dir`.
+When the file sink cannot take the terminal root span itself — the one record
+a `--log-dir` consumer needs to know the run is over — `kotlp` also prints that
+span to the console (which `--log-dir` otherwise keeps quiet), so a completion
+record exists somewhere rather than making a lost chunk look like a killed
+process.
+
+Use `--log-dir-probe` to catch an unwritable or non-overwritable mount at
+startup instead of discovering it mid-run or after the fact: it writes a small
+file, closes it, reopens it with truncation (the same shape as a rotation or
+the final close), writes again, and reads the result back, before any real log
+file or the child is touched. This catches setups such as a Cloud Run runtime
+service account holding only `roles/storage.objectCreator` on a GCS-backed
+volume, where the *first* `open()` of a file succeeds but every overwrite
+after it is refused. `--log-dir-probe` requires `--log-dir`.
 
 Because the file holds OTLP records only, the raw child bytes emitted by
 `--no-logs` and `-d/--debug` are *not* written to it — in those modes the file
 contains metrics and traces.
 
 `kotlp` proxies the child's exit code (and reports `128 + signal` if the child
-was killed by a signal). `SIGINT`/`SIGTERM`/`SIGHUP` are forwarded to the child.
+was killed by a signal), except for the file-sink failure above, which can turn
+a `0` into `1`. `SIGINT`/`SIGTERM`/`SIGHUP` are forwarded to the child.
 
 ## Capturing traces from your app
 
