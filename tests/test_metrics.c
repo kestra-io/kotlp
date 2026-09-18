@@ -519,9 +519,47 @@ static void test_final_counters_rusage_wins_on_cpu(void) {
     CHECK(out.read_bytes == 100); /* the IO series still continues */
 }
 
+
+static void test_parse_net_dev_basic(void) {
+    long long rx = 0, tx = 0;
+    CHECK(kotlp_parse_proc_net_dev(
+        "  eth0: 1234 10 0 0 0 0 0 0 5678 20 0 0 0 0 0 0", &rx, &tx));
+    CHECK(rx == 1234);
+    CHECK(tx == 5678); /* tx_bytes is the 9th counter, not the 2nd */
+}
+
+static void test_parse_net_dev_skips_loopback(void) {
+    long long rx = 0, tx = 0;
+    /* A task talking to itself is not network activity. */
+    CHECK(!kotlp_parse_proc_net_dev(
+        "    lo: 999 9 0 0 0 0 0 0 999 9 0 0 0 0 0 0", &rx, &tx));
+}
+
+static void test_parse_net_dev_skips_headers_and_junk(void) {
+    long long rx = 0, tx = 0;
+    CHECK(!kotlp_parse_proc_net_dev("Inter-|   Receive        |  Transmit", &rx, &tx));
+    CHECK(!kotlp_parse_proc_net_dev(" face |bytes packets errs", &rx, &tx));
+    CHECK(!kotlp_parse_proc_net_dev("no colon here", &rx, &tx));
+    /* An interface line truncated before the 9th counter must not be trusted. */
+    CHECK(!kotlp_parse_proc_net_dev("  eth0: 1 2 3", &rx, &tx));
+}
+
+static void test_parse_net_dev_interface_named_like_loopback(void) {
+    long long rx = 0, tx = 0;
+    /* Only the exact "lo" is loopback: "lo0" and "lodocker" are real interfaces. */
+    CHECK(kotlp_parse_proc_net_dev(
+        "   lo0: 11 1 0 0 0 0 0 0 22 2 0 0 0 0 0 0", &rx, &tx));
+    CHECK(rx == 11);
+    CHECK(tx == 22);
+}
+
 void test_metrics(void) {
     test_parse_stat_basic();
     test_parse_stat_malformed();
+    test_parse_net_dev_basic();
+    test_parse_net_dev_skips_loopback();
+    test_parse_net_dev_skips_headers_and_junk();
+    test_parse_net_dev_interface_named_like_loopback();
     test_mark_descendants();
     test_mark_descendants_unordered();
     test_mark_descendants_deep_chain();
