@@ -13,6 +13,8 @@
  *   process.memory.usage                 gauge By  (summed RSS)
  *   process.memory.virtual               gauge By  (summed vsize)
  *   process.disk.io                      sum   By  disk.io.direction=read|write
+ *   process.network.io                   sum   By  network.io.direction=receive|transmit
+ *                                            (namespace-wide, not per-process)
  *   process.thread.count                 gauge {thread}
  *   process.open_file_descriptor.count   gauge {count}
  *
@@ -113,9 +115,35 @@ typedef struct {
     long long threads;        /* summed thread count         */
     bool have_fds;
     long long open_fds;       /* summed open fd count        */
+    bool have_net;
+    long long rx_bytes;       /* namespace-wide, NOT summed  */
+    long long tx_bytes;
 } sample;
 
 /* --- pure helpers (platform-independent; exercised by the unit tests) ---- */
+
+bool kotlp_parse_proc_net_dev(const char *line, long long *out_rx,
+                              long long *out_tx) {
+    /* "  eth0: <rx_bytes> <rx_packets> ... <tx_bytes> <tx_packets> ..."
+     * rx_bytes is the 1st counter after the colon, tx_bytes the 9th. */
+    const char *colon = strchr(line, ':');
+    if (!colon) return false;
+
+    const char *name = line;
+    while (*name == ' ' || *name == '\t') name++;
+    /* Loopback never leaves the namespace, so counting it would report a task
+     * talking to itself as network activity. */
+    if (colon - name == 2 && strncmp(name, "lo", 2) == 0) return false;
+
+    long long v[9];
+    if (sscanf(colon + 1, "%lld %lld %lld %lld %lld %lld %lld %lld %lld",
+               &v[0], &v[1], &v[2], &v[3], &v[4], &v[5], &v[6], &v[7], &v[8]) != 9) {
+        return false;
+    }
+    *out_rx = v[0];
+    *out_tx = v[8];
+    return true;
+}
 
 bool kotlp_parse_proc_stat(const char *line, kotlp_proc_stat *out) {
     /* comm (field 2) is wrapped in parens and may itself contain spaces and
@@ -396,6 +424,32 @@ double kotlp_cpu_utilization(double cpu_delta_s, double wall_delta_s, int ncpu) 
 
 /* --- /proc collection (Linux runtime only) ------------------------------ */
 
+/* Read the network namespace's cumulative counters. Unlike every other source
+ * here this is namespace-wide, not per-process: each member of the tree would
+ * report the same figures, so it is read once from the root and never summed. */
+static void read_proc_net(pid_t pid, sample *s) {
+    char path[64];
+    snprintf(path, sizeof(path), "/proc/%d/net/dev", (int)pid);
+    FILE *f = fopen(path, "r");
+    if (!f) return;
+    char line[512];
+    long long rx_total = 0, tx_total = 0;
+    bool any = false;
+    while (fgets(line, sizeof(line), f)) {
+        long long rx, tx;
+        if (!kotlp_parse_proc_net_dev(line, &rx, &tx)) continue;
+        rx_total += rx;
+        tx_total += tx;
+        any = true;
+    }
+    fclose(f);
+    if (any) {
+        s->rx_bytes = rx_total;
+        s->tx_bytes = tx_total;
+        s->have_net = true;
+    }
+}
+
 /* Read one process's cumulative IO counters. Adds them to the running sample
  * and also reports them separately, so the per-process value can be carried
  * across samples (see kotlp_retire_exited). */
@@ -536,6 +590,7 @@ static bool collect(pid_t root, sample *s, kotlp_tree_member *members,
     }
     if (member_n) *member_n = mn;
     if (!any) return false;
+    read_proc_net(root, s);
     s->have_cpu = true;
     s->have_mem = true;
     s->have_vsize = true;
@@ -656,6 +711,14 @@ static void emit_sample(const kotlp_config *cfg, pid_t pid, uint64_t start_ns,
         SEP();
         metric_sum_int(&out, "process.disk.io", "By", s->write_bytes, start_ns,
                        now, "disk.io.direction", "write");
+    }
+    if (s->have_net) {
+        SEP();
+        metric_sum_int(&out, "process.network.io", "By", s->rx_bytes, start_ns,
+                       now, "network.io.direction", "receive");
+        SEP();
+        metric_sum_int(&out, "process.network.io", "By", s->tx_bytes, start_ns,
+                       now, "network.io.direction", "transmit");
     }
     if (s->have_threads) {
         SEP();

@@ -215,6 +215,12 @@ typedef struct {
  * Returns false if the line is malformed/too short. */
 bool kotlp_parse_proc_stat(const char *line, kotlp_proc_stat *out);
 
+/* Parse one interface line of /proc/<pid>/net/dev into received/transmitted
+ * bytes. Returns false for the two header lines, a malformed line, or the
+ * loopback interface, which carries no off-host traffic. */
+bool kotlp_parse_proc_net_dev(const char *line, long long *out_rx,
+                              long long *out_tx);
+
 /* Mark which of the `n` processes are `root` or one of its descendants.
  * pid[i]/ppid[i] describe process i; in_tree[i] (length n) is filled in.
  * Parent links that loop - which a non-atomic /proc scan can produce - leave
