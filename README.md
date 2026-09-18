@@ -23,7 +23,7 @@ following OpenTelemetry [Semantic Conventions](https://opentelemetry.io/docs/spe
 |----------|--------------|---------------|
 | **Logs** | Each line of the child's stdout/stderr becomes an OTLP `LogRecord` with `log.iostream` set to `stdout`/`stderr`. Lines are split on LF, and a CR is dropped only as part of a CRLF ending — a bare CR (progress bars) stays in the body as `\r`. | stdout-origin records → **our stdout**; stderr-origin records → **our stderr** |
 | **Traces** | An embedded **OTLP/HTTP receiver** captures spans the child exports, and a synthetic **root span** describes the whole execution (duration, exit code, signal). | stdout |
-| **Metrics** | Periodic samples of the child **process tree's CPU time/utilization, resident/virtual memory, disk IO, thread count and open file descriptors** as OTLP metrics (`process.*`). | stdout |
+| **Metrics** | Periodic samples of the child **process tree's CPU time/utilization, resident/virtual memory, disk IO, network IO, thread count and open file descriptors** as OTLP metrics (`process.*`). Network is the counter for the whole network namespace, not the process: in a container that is the container's traffic, on a bare host the host's. | stdout |
 
 Because everything is OTLP/JSON, you can pipe `kotlp` output straight into an
 OpenTelemetry Collector, `jq`, or any log shipper (use `-f json` for bare,
