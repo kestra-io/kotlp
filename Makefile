@@ -6,7 +6,12 @@
 
 NAME            := kotlp
 COSMOCC_VERSION := 4.0.2
+COSMOCC_SHA256  := 85b8c37a406d862e656ad4ec14be9f6ce474c1b436b9615e91a55208aced3f44
 COSMOCC_DIR     := build/cosmocc
+# GitHub release first: cosmo.zip has been unreachable from CI runners.
+COSMOCC_URLS    := https://github.com/jart/cosmopolitan/releases/download/$(COSMOCC_VERSION)/cosmocc-$(COSMOCC_VERSION).zip \
+                   https://cosmo.zip/pub/cosmocc/cosmocc-$(COSMOCC_VERSION).zip
+SHA256SUM       := $(shell command -v sha256sum 2>/dev/null || echo shasum -a 256)
 BIN             := build/$(NAME)
 
 SRC := $(wildcard src/*.c)
@@ -59,8 +64,11 @@ toolchain: $(COSMOCC_DIR)/bin/cosmocc
 $(COSMOCC_DIR)/bin/cosmocc:
 	@echo "downloading cosmocc $(COSMOCC_VERSION)..."
 	@mkdir -p $(COSMOCC_DIR)
-	@curl -fsSL -o build/cosmocc.zip \
-		https://cosmo.zip/pub/cosmocc/cosmocc-$(COSMOCC_VERSION).zip
+	@for url in $(COSMOCC_URLS); do \
+		curl -fsSL --retry 3 --connect-timeout 20 -o build/cosmocc.zip "$$url" && break; \
+		echo "failed to download $$url" >&2; rm -f build/cosmocc.zip; \
+	done; test -f build/cosmocc.zip
+	@echo "$(COSMOCC_SHA256)  build/cosmocc.zip" | $(SHA256SUM) -c -
 	@unzip -q -o build/cosmocc.zip -d $(COSMOCC_DIR)
 	@rm -f build/cosmocc.zip
 	@chmod +x $(COSMOCC_DIR)/bin/* 2>/dev/null || true
